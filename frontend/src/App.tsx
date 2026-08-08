@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useGSAP } from '@gsap/react'
+import gsap from 'gsap'
+import { ScrollTrigger } from 'gsap/ScrollTrigger'
+import { Play, Satellite } from 'lucide-react'
+import { CommandHero } from './components/CommandHero'
+import { EvidenceCarousel } from './components/EvidenceCarousel'
 import { Header } from './components/Header'
 import { MemoryRail } from './components/MemoryRail'
 import { OutcomePanel } from './components/OutcomePanel'
@@ -13,7 +19,13 @@ import { describeApiError, sentinelApi } from './lib/api'
 import { cognitoAuth } from './lib/auth'
 import type { DashboardData, HazardLayer, OutageResult, OutageState, SatelliteAssessment, SatelliteAssessmentRequest, SatelliteAssessmentStage, SimulationRequest, SimulationResult } from './types'
 
+gsap.registerPlugin(useGSAP, ScrollTrigger)
+
+const learningStatement = 'Every completed scenario should leave the next operator with stronger evidence, clearer limits, and a more defensible plan.'
+const learningWords = learningStatement.split(' ')
+
 export default function App() {
+  const shellRef = useRef<HTMLDivElement>(null)
   const [dashboard, setDashboard] = useState<DashboardData>(() => structuredClone(demoDashboard))
   const [runtime, setRuntime] = useState(offlineRuntime)
   const [auth, setAuth] = useState(() => cognitoAuth.state())
@@ -58,6 +70,53 @@ export default function App() {
     const timeout = window.setTimeout(() => setToast(null), 4200)
     return () => window.clearTimeout(timeout)
   }, [toast])
+
+  useGSAP(() => {
+    const media = gsap.matchMedia()
+    media.add('(prefers-reduced-motion: no-preference)', () => {
+      const words = gsap.utils.toArray<HTMLElement>('.desire-copy .scrub-word')
+      gsap.fromTo(words, { opacity: 0.14 }, {
+        opacity: 1,
+        stagger: 0.055,
+        ease: 'none',
+        scrollTrigger: {
+          trigger: '.desire-copy',
+          start: 'top 82%',
+          end: 'bottom 40%',
+          scrub: 0.7,
+        },
+      })
+
+      gsap.utils.toArray<HTMLElement>('[data-scroll-image]').forEach((element) => {
+        gsap.fromTo(element, { scale: 0.84, opacity: 0.28 }, {
+          scale: 1,
+          opacity: 1,
+          transformOrigin: '50% 50%',
+          ease: 'none',
+          scrollTrigger: {
+            trigger: element,
+            start: 'top 92%',
+            end: 'center 56%',
+            scrub: 0.8,
+            invalidateOnRefresh: true,
+          },
+        })
+        gsap.to(element, {
+          opacity: 0.22,
+          filter: 'brightness(.58) saturate(.72)',
+          ease: 'none',
+          scrollTrigger: {
+            trigger: element,
+            start: 'bottom 32%',
+            end: 'bottom top',
+            scrub: 0.8,
+            invalidateOnRefresh: true,
+          },
+        })
+      })
+    })
+    return () => media.revert()
+  }, { scope: shellRef })
 
   const selectedLocation = useMemo(
     () => dashboard.locations.find((location) => location.id === selectedLocationId) ?? dashboard.locations[0] ?? demoDashboard.locations[0],
@@ -181,34 +240,76 @@ export default function App() {
   }, [])
 
   return (
-    <div className="app-shell">
+    <div ref={shellRef} className="app-shell taste-refresh">
       <a className="skip-link" href="#risk-map">Skip to risk map</a>
       <Sidebar runtime={runtime} onUnavailable={showPreviewLimit} />
-      <Header
-        runtime={runtime}
-        auth={auth}
-        currentTime={currentTime}
-        updatedAt={dashboard.updatedAt}
-        onAssessSatellite={() => setAssessmentOpen(true)}
-        onRunSimulation={() => setSimulationOpen(true)}
-        onAuthAction={handleAuth}
-        onInfo={showPreviewLimit}
-      />
-      <RiskWatchlist locations={dashboard.locations} selectedId={selectedLocation.id} onSelect={setSelectedLocationId} onInfo={showPreviewLimit} />
-      <RiskMap layer={layer} onLayerChange={setLayer} locations={dashboard.locations} selected={selectedLocation} onSelect={setSelectedLocationId} runtime={runtime} onInfo={showPreviewLimit} />
-      <MemoryRail
-        memory={dashboard.memory}
-        activities={dashboard.activities}
-        regions={dashboard.regions}
-        resilience={dashboard.resilience}
-        runtime={runtime}
-        outageState={outageState}
-        outageResult={outageResult}
-        outageError={outageError}
-        onOutage={simulateOutage}
-        onRestore={restoreRegion}
-      />
-      <OutcomePanel timeline={dashboard.timeline} metrics={dashboard.planMetrics} resources={dashboard.resources} planVersion={planVersion} runtime={runtime} onInfo={showPreviewLimit} />
+      <div className="command-canvas">
+        <Header
+          runtime={runtime}
+          auth={auth}
+          currentTime={currentTime}
+          updatedAt={dashboard.updatedAt}
+          onAssessSatellite={() => setAssessmentOpen(true)}
+          onRunSimulation={() => setSimulationOpen(true)}
+          onAuthAction={handleAuth}
+          onInfo={showPreviewLimit}
+        />
+
+        <main className="command-page overflow-x-hidden w-full max-w-full">
+          <CommandHero onRunSimulation={() => setSimulationOpen(true)} onAssessSatellite={() => setAssessmentOpen(true)} />
+
+          <section id="regional-picture" className="operations-chapter" aria-labelledby="regional-picture-title">
+            <div className="chapter-heading max-w-6xl">
+              <h2 id="regional-picture-title">One region. Several failure paths.</h2>
+              <p>Explore the live operational picture without losing the provenance, persistence, and human-review limits behind every signal.</p>
+            </div>
+
+            <div className="interest-bento grid-flow-dense">
+              <RiskWatchlist locations={dashboard.locations} selectedId={selectedLocation.id} onSelect={setSelectedLocationId} onInfo={showPreviewLimit} />
+              <RiskMap layer={layer} onLayerChange={setLayer} locations={dashboard.locations} selected={selectedLocation} onSelect={setSelectedLocationId} runtime={runtime} onInfo={showPreviewLimit} />
+              <EvidenceCarousel memory={dashboard.memory} activities={dashboard.activities} resilience={dashboard.resilience} runtime={runtime} />
+            </div>
+          </section>
+
+          <section className="learning-chapter" aria-labelledby="learning-title">
+            <div className="chapter-heading desire-heading max-w-6xl">
+              <h2 id="learning-title">Operational memory that earns its place.</h2>
+              <p className="desire-copy">
+                {learningWords.map((word, index) => (
+                  <span className="scrub-word" key={`${word}-${index}`}>{word}{index === learningWords.length - 1 ? '' : ' '}</span>
+                ))}
+              </p>
+            </div>
+
+            <div className="desire-bento grid-flow-dense">
+              <OutcomePanel timeline={dashboard.timeline} metrics={dashboard.planMetrics} resources={dashboard.resources} planVersion={planVersion} runtime={runtime} onInfo={showPreviewLimit} />
+              <MemoryRail
+                memory={dashboard.memory}
+                activities={dashboard.activities}
+                regions={dashboard.regions}
+                resilience={dashboard.resilience}
+                runtime={runtime}
+                outageState={outageState}
+                outageResult={outageResult}
+                outageError={outageError}
+                onOutage={simulateOutage}
+                onRestore={restoreRegion}
+              />
+            </div>
+          </section>
+
+          <footer className="command-action">
+            <div>
+              <h2>Pressure-test the next decision before conditions choose for you.</h2>
+              <p>Run a bounded scenario or bring in source imagery. Every result stays explicit about evidence, persistence, and human review.</p>
+            </div>
+            <div className="action-buttons">
+              <button className="hero-primary" type="button" onClick={() => setSimulationOpen(true)}><Play size={17} fill="currentColor" /> Run simulation</button>
+              <button className="hero-secondary" type="button" onClick={() => setAssessmentOpen(true)}><Satellite size={17} /> Assess imagery</button>
+            </div>
+          </footer>
+        </main>
+      </div>
       <SimulationModal
         open={simulationOpen}
         location={selectedLocation}

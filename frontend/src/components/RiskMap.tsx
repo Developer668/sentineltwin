@@ -31,7 +31,7 @@ export function RiskMap({ layer, onLayerChange, locations, selected, onSelect, r
   const showSeismic = layer !== 'fire'
 
   return (
-    <section id="risk-map" tabIndex={-1} className={`risk-map layer-${layer}`} aria-label="California multi-hazard risk map">
+    <section id="risk-map" tabIndex={-1} className={`risk-map scroll-image layer-${layer}`} data-scroll-image aria-label="California multi-hazard risk map">
       <div className="map-grid" aria-hidden="true" />
       <svg className="map-art" viewBox="0 0 1000 720" role="img" aria-label={`${layer} risk visualization for California`}>
         <defs>
