@@ -1,7 +1,9 @@
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import sentineltwin.app as app_module
 from sentineltwin.app import (
     API,
     _malware_scan_events,
@@ -32,6 +34,11 @@ def test_health_clearly_surfaces_demo_mode():
     assert body["data"]["mode"] == "demo"
     assert body["meta"]["memory_provider"] == "deterministic-in-memory"
     assert response["headers"]["X-Sentinel-Mode"] == "demo"
+    assert "providers" not in body["meta"]
+    assert "aws_region" not in body["meta"]
+    assert "bucket" not in body["data"]["aws"]
+    assert "last_error" not in body["data"]["aws"]
+    assert response["headers"]["X-Content-Type-Options"] == "nosniff"
 
 
 def test_locations_include_hackathon_watchlist():
@@ -41,12 +48,30 @@ def test_locations_include_hackathon_watchlist():
     assert {"Santa Rosa Wildland Edge", "San Bernardino Basin", "Ridgecrest Fault Zone"} <= names
 
 
+def test_dashboard_returns_the_complete_command_center_contract():
+    response, body = request("GET", "/api/dashboard")
+    assert response["statusCode"] == 200
+    dashboard = body["data"]
+    assert dashboard["locations"]
+    assert dashboard["agents"]
+    assert dashboard["recent_memories"]
+    assert dashboard["risk_summary"]["locations_monitored"] == len(dashboard["locations"])
+    assert dashboard["system"]["persistence"]["durable"] is False
+
+
 def test_spatial_location_search_returns_distance_order():
     response, body = request("GET", "/api/locations/nearby", query="lat=38.44&lng=-122.71&radius_km=100")
     assert response["statusCode"] == 200
     locations = body["data"]["locations"]
     assert locations[0]["name"] == "Santa Rosa Wildland Edge"
     assert locations[0]["distance_km"] < 2
+
+
+@pytest.mark.parametrize("parameter", ["lat=nan&lng=-122.71", "lat=38.44&lng=inf", "lat=38.44&lng=-122.71&radius_km=nan"])
+def test_spatial_location_search_rejects_non_finite_coordinates(parameter):
+    response, body = request("GET", "/api/locations/nearby", query=parameter)
+    assert response["statusCode"] == 422
+    assert body["data"]["error"]["code"] == "validation_error"
 
 
 def test_simulation_closes_memory_learning_loop():
@@ -81,6 +106,17 @@ def test_ui_camel_case_request_and_location_slug_are_supported():
     assert body["data"]["parameters"]["duration_minutes"] == 720
 
 
+@pytest.mark.parametrize("hazard", ["fire", "earthquake", "multi_hazard"])
+def test_ui_maximum_72_hour_horizon_is_supported(hazard):
+    response, body = request(
+        "POST",
+        "/api/simulations",
+        {"location_id": "san-bernardino", "hazard": hazard, "parameters": {"duration_hours": 72}},
+    )
+    assert response["statusCode"] == 201
+    assert body["data"]["parameters"]["duration_minutes"] == 4320
+
+
 def test_invalid_json_and_unknown_routes_return_structured_errors():
     response = lambda_handler(
         {"rawPath": "/api/memories", "requestContext": {"http": {"method": "POST"}}, "body": "{"},
@@ -92,6 +128,70 @@ def test_invalid_json_and_unknown_routes_return_structured_errors():
     response, body = request("GET", "/api/does-not-exist")
     assert response["statusCode"] == 404
     assert body["data"]["error"]["code"] == "not_found"
+
+
+@pytest.mark.parametrize("payload", ['{"risk":NaN}', '{"risk":Infinity}', '{"risk":-Infinity}'])
+def test_non_finite_json_is_rejected(payload):
+    response = lambda_handler(
+        {"rawPath": "/api/memories", "requestContext": {"http": {"method": "POST"}}, "body": payload},
+        None,
+    )
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"])["data"]["error"]["code"] == "invalid_json"
+
+
+def test_non_finite_internal_value_never_leaks_invalid_json(monkeypatch):
+    monkeypatch.setattr(API, "dispatch", lambda *_args, **_kwargs: (200, {"risk": float("nan")}, None))
+    response = lambda_handler(
+        {"rawPath": "/api/dashboard", "requestContext": {"http": {"method": "GET"}}},
+        None,
+    )
+    assert response["statusCode"] == 500
+    assert "NaN" not in response["body"]
+    assert json.loads(response["body"])["data"]["error"]["code"] == "internal_error"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/locations", {"name": "Bad coordinate", "latitude": "nan", "longitude": -122}),
+        ("/api/memories", {"content": "Bad metadata", "metadata": ["not", "an", "object"]}),
+        ("/api/simulations", {"location_id": "santa-rosa", "parameters": {"fire": []}}),
+        ("/api/simulations", {"location_id": "santa-rosa", "seed": 9_999_999_999}),
+    ],
+)
+def test_write_routes_reject_ambiguous_or_unbounded_inputs(path, payload):
+    response, body = request("POST", path, payload)
+    assert response["statusCode"] == 422
+    assert body["data"]["error"]["code"] == "validation_error"
+
+
+def test_required_cognito_operator_group_is_enforced_server_side(monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        "SETTINGS",
+        replace(app_module.SETTINGS, required_operator_group="sentineltwin-operators"),
+    )
+    base_event = {
+        "version": "2.0",
+        "rawPath": "/api/locations",
+        "requestContext": {"http": {"method": "GET"}, "authorizer": {"jwt": {"claims": {}}}},
+    }
+    denied = app_module.lambda_handler(base_event, None)
+    assert denied["statusCode"] == 403
+    denied_body = json.loads(denied["body"])
+    assert denied_body["data"]["error"]["code"] == "forbidden"
+    assert "providers" not in denied_body["meta"]
+
+    allowed_event = json.loads(json.dumps(base_event))
+    allowed_event["requestContext"]["authorizer"]["jwt"]["claims"]["cognito:groups"] = (
+        "incident-viewers,sentineltwin-operators"
+    )
+    allowed = app_module.lambda_handler(allowed_event, None)
+    assert allowed["statusCode"] == 200
+
+    health_event = {"rawPath": "/api/health", "requestContext": {"http": {"method": "GET"}}}
+    assert app_module.lambda_handler(health_event, None)["statusCode"] == 200
 
 
 def test_failover_rehearsal_preserves_memory():

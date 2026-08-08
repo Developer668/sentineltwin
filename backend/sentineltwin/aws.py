@@ -159,6 +159,17 @@ class AWSIntegrations:
             },
         }
 
+    def public_status(self) -> dict:
+        """Expose only coarse readiness on the unauthenticated health route."""
+        return {
+            "bedrock_configured": bool(self.settings.bedrock_model_id),
+            "artifact_storage_configured": bool(self.settings.artifact_bucket),
+            "satellite_pipeline_configured": bool(
+                self.settings.artifact_bucket and self.settings.bedrock_model_id
+            ),
+            "malware_scan_provider": "amazon-guardduty",
+        }
+
     def create_satellite_upload(self, location_id: str, filename: str, content_type: str) -> dict:
         """Create a constrained S3 browser upload. A demo deployment never returns a fake URL."""
         bucket = self.settings.artifact_bucket
@@ -412,6 +423,8 @@ class AWSIntegrations:
     ) -> dict:
         """Assess one S3 image with Bedrock, or return an explicitly labelled demo result."""
         if demo_tile:
+            if not self.settings.demo_mode:
+                raise ValidationError("demo_tile is available only when SENTINEL_DEMO_MODE=true")
             return self._deterministic_assessment(location, demo_tile=demo_tile, fallback_reason=None)
         if not object_key:
             raise ValidationError("object_key is required unless demo_tile is provided")
@@ -419,6 +432,8 @@ class AWSIntegrations:
             location, object_key, version_id, event_scan_status, event_etag
         )
         if not self.settings.bedrock_model_id:
+            if not self.settings.demo_mode:
+                raise IntegrationNotConfigured("amazon-bedrock")
             return self._deterministic_assessment(
                 location,
                 object_key=object_key,
@@ -483,8 +498,13 @@ class AWSIntegrations:
         except (ValidationError, IntegrationNotConfigured):
             raise
         except Exception as exc:
-            LOGGER.exception("Satellite assessment failed; using labelled deterministic fallback")
+            LOGGER.exception("Satellite assessment failed")
             self._errors["satellite"] = type(exc).__name__
+            if not self.settings.demo_mode:
+                raise IntegrationNotConfigured(
+                    "amazon-bedrock",
+                    "Satellite assessment is temporarily unavailable; no synthetic result was persisted",
+                ) from exc
             return self._deterministic_assessment(
                 location,
                 object_key=object_key,

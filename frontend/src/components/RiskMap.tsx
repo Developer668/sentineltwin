@@ -31,7 +31,7 @@ export function RiskMap({ layer, onLayerChange, locations, selected, onSelect, r
   const showSeismic = layer !== 'fire'
 
   return (
-    <section className={`risk-map layer-${layer}`} aria-label="California multi-hazard risk map">
+    <section id="risk-map" tabIndex={-1} className={`risk-map layer-${layer}`} aria-label="California multi-hazard risk map">
       <div className="map-grid" aria-hidden="true" />
       <svg className="map-art" viewBox="0 0 1000 720" role="img" aria-label={`${layer} risk visualization for California`}>
         <defs>
@@ -115,7 +115,7 @@ export function RiskMap({ layer, onLayerChange, locations, selected, onSelect, r
           <button
             key={location.id}
             type="button"
-            className={`map-hotspot ${location.risk} ${isSelected ? 'selected' : ''} ${visible ? '' : 'dimmed'}`}
+            className={`map-hotspot ${location.risk} ${location.y > 64 ? 'southern' : ''} ${isSelected ? 'selected' : ''} ${visible ? '' : 'dimmed'}`}
             style={{ left: `${location.x}%`, top: `${location.y}%` }}
             onClick={() => onSelect(location.id)}
             aria-label={`Select ${location.name}, ${location.risk} risk`}
@@ -149,7 +149,11 @@ export function RiskMap({ layer, onLayerChange, locations, selected, onSelect, r
       </div>
 
       <div className="scale-bar" aria-hidden="true"><span>N</span><i /><small>0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 50&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 100&nbsp;&nbsp;&nbsp; 150 mi</small></div>
-      <div className="map-attribution">Synthetic terrain · {runtime.persistence === 'cockroachdb' ? 'live API risk overlay' : 'deterministic demo overlay'}</div>
+      <div className="evidence-strip" aria-label="Decision support guardrails">
+        <span><small>Risk source</small><strong className={runtime.source}>{runtime.persistence === 'cockroachdb' ? 'Live API evidence' : runtime.apiConnected ? 'Demo API overlay' : 'Bundled snapshot'}</strong></span>
+        <span><small>Imagery gate</small><strong>{runtime.persistence === 'cockroachdb' ? 'GuardDuty clean only' : 'Synthetic unless uploaded'}</strong></span>
+        <span><small>Decision status</small><strong>Human review required</strong></span>
+      </div>
     </section>
   )
 }

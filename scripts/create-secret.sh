@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 : "${DATABASE_URL:?Set DATABASE_URL before creating the AWS secret}"
 region=${AWS_REGION:-us-west-2}
 secret_name=${DATABASE_SECRET_NAME:-sentineltwin/cockroachdb}
-
-if [[ "$DATABASE_URL" != *"sslmode=verify-full"* ]]; then
-  echo "Refusing to store a CockroachDB Cloud URL without sslmode=verify-full." >&2
-  exit 2
-fi
+python_binary=${PYTHON_BINARY:-python3}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+url_validator="$script_dir/validate-database-url.py"
 
 command -v aws >/dev/null 2>&1 || { echo "AWS CLI is required." >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "jq is required." >&2; exit 1; }
+command -v "$python_binary" >/dev/null 2>&1 || { echo "Python is required." >&2; exit 1; }
+printf '%s' "$DATABASE_URL" | "$python_binary" "$url_validator"
 
 secret_file=$(mktemp "${TMPDIR:-/tmp}/sentineltwin-secret.XXXXXX")
 chmod 600 "$secret_file"
@@ -19,7 +19,8 @@ cleanup() {
   rm -f "$secret_file"
 }
 trap cleanup EXIT INT TERM
-jq -n --arg database_url "$DATABASE_URL" '{DATABASE_URL: $database_url}' >"$secret_file"
+printf '%s' "$DATABASE_URL" | "$python_binary" -c \
+  'import json, sys; json.dump({"DATABASE_URL": sys.stdin.read()}, sys.stdout)' >"$secret_file"
 
 if aws secretsmanager describe-secret --secret-id "$secret_name" --region "$region" >/dev/null 2>&1; then
   echo "Updating existing Secrets Manager value '$secret_name'."

@@ -27,6 +27,9 @@ function normalizedDomain(): { domain: string; error?: string } {
   try {
     const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`)
     const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+      return { domain: '', error: 'Cognito domain must be an origin without credentials, paths, or parameters.' }
+    }
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
       return { domain: '', error: 'Cognito domain must use HTTPS outside localhost development.' }
     }
@@ -36,18 +39,43 @@ function normalizedDomain(): { domain: string; error?: string } {
   }
 }
 
-function redirectUri(): string {
-  return (import.meta.env.VITE_COGNITO_REDIRECT_URI as string | undefined)?.trim() || `${window.location.origin}/`
+function normalizedRedirectUri(): { redirectUri: string; error?: string } {
+  const value = (import.meta.env.VITE_COGNITO_REDIRECT_URI as string | undefined)?.trim() || `${window.location.origin}/`
+  try {
+    const url = new URL(value)
+    if (url.origin !== window.location.origin || url.username || url.password || url.search || url.hash) {
+      return { redirectUri: '', error: 'Cognito redirect URI must be a same-origin URL without credentials or parameters.' }
+    }
+    return { redirectUri: url.href }
+  } catch {
+    return { redirectUri: '', error: 'Cognito redirect URI is not a valid same-origin URL.' }
+  }
+}
+
+function normalizedScopes(): { scopes: string; error?: string } {
+  const value = (import.meta.env.VITE_COGNITO_SCOPES as string | undefined)?.trim() || 'openid email profile'
+  const scopes = [...new Set(value.split(/\s+/).filter(Boolean))]
+  const allowed = new Set(['openid', 'email', 'profile'])
+  if (!scopes.includes('openid') || scopes.some((scope) => !allowed.has(scope))) {
+    return { scopes: '', error: 'Cognito scopes must include openid and may contain only openid, email, and profile.' }
+  }
+  return { scopes: scopes.join(' ') }
 }
 
 function config() {
   const domain = normalizedDomain()
+  const redirect = normalizedRedirectUri()
+  const scopes = normalizedScopes()
+  const clientId = (import.meta.env.VITE_COGNITO_CLIENT_ID as string | undefined)?.trim() ?? ''
+  const clientError = clientId && !/^[A-Za-z0-9]{1,128}$/.test(clientId)
+    ? 'Cognito client ID contains unsupported characters.'
+    : undefined
   return {
     domain: domain.domain,
-    domainError: domain.error,
-    clientId: (import.meta.env.VITE_COGNITO_CLIENT_ID as string | undefined)?.trim() ?? '',
-    redirectUri: redirectUri(),
-    scopes: (import.meta.env.VITE_COGNITO_SCOPES as string | undefined)?.trim() || 'openid email profile',
+    configError: domain.error ?? redirect.error ?? scopes.error ?? clientError,
+    clientId: clientError ? '' : clientId,
+    redirectUri: redirect.redirectUri,
+    scopes: scopes.scopes,
   }
 }
 
@@ -78,15 +106,15 @@ function decodeClaims(token?: string): Record<string, unknown> {
 }
 
 function currentState(error?: string): AuthState {
-  const { domain, clientId, domainError } = config()
-  const enabled = Boolean(domain && clientId)
+  const { domain, clientId, redirectUri, scopes, configError } = config()
+  const enabled = Boolean(domain && clientId && redirectUri && scopes && !configError)
   if (memoryAccessToken && memoryExpiresAt <= Date.now() + 15_000) {
     clearTokens()
   }
   const authenticated = Boolean(enabled && memoryAccessToken && memoryExpiresAt > Date.now() + 15_000)
   const claims = decodeClaims(memoryIdToken ?? undefined)
   const userLabel = String(claims.email ?? claims['cognito:username'] ?? claims.username ?? '').trim() || undefined
-  return { enabled, authenticated, userLabel, error: error ?? domainError }
+  return { enabled, authenticated, userLabel, error: error ?? configError }
 }
 
 function clearTransient(): void {
@@ -141,7 +169,7 @@ export const cognitoAuth = {
     const authError = url.searchParams.get('error')
     const code = url.searchParams.get('code')
     if (authError) {
-      const message = url.searchParams.get('error_description') || authError
+      const message = (url.searchParams.get('error_description') || authError).slice(0, 180)
       clearTransient()
       cleanCallbackUrl()
       return currentState(`Sign-in was not completed: ${message}`)
@@ -172,10 +200,15 @@ export const cognitoAuth = {
       })
       if (!response.ok) throw new Error(`token endpoint returned ${response.status}`)
       const tokens = await response.json() as TokenResponse
-      if (!tokens.access_token) throw new Error('access token missing')
+      const expiresIn = Number(tokens.expires_in)
+      const accessClaims = decodeClaims(tokens.access_token)
+      if (!tokens.access_token || tokens.access_token.split('.').length !== 3) throw new Error('access token missing')
+      if (tokens.token_type?.toLowerCase() !== 'bearer') throw new Error('unexpected token type')
+      if (!Number.isFinite(expiresIn) || expiresIn < 60 || expiresIn > 86_400) throw new Error('invalid token lifetime')
+      if (accessClaims.token_use !== 'access' || accessClaims.client_id !== clientId) throw new Error('unexpected access token claims')
       memoryAccessToken = tokens.access_token
       memoryIdToken = tokens.id_token ?? null
-      memoryExpiresAt = Date.now() + Math.max(60, tokens.expires_in ?? 3600) * 1000
+      memoryExpiresAt = Date.now() + expiresIn * 1000
       cleanCallbackUrl()
       return currentState()
     } catch {

@@ -3,8 +3,8 @@
 ## Shipped controls
 
 - Lambda receives only a Secrets Manager ARN; the database URL is fetched at runtime and must never be logged.
-- Cloud deployment defaults to `AUTH_MODE=cognito`. API Gateway validates Cognito JWT issuer, app-client audience, expiry, and the `openid` authorization scope; health is the only public application route. `AUTH_MODE=public` is accepted only with synthetic demo mode and no database secret; CloudFormation additionally removes S3/Bedrock runtime access and disables ingestion.
-- The Cognito SPA client has no secret and permits only OAuth authorization code. The browser uses PKCE S256, validates state, keeps short-lived access/ID tokens in memory only, and deliberately discards the refresh token. `sessionStorage` holds only transient PKCE verifier/state values during the redirect.
+- Cloud deployment defaults to `AUTH_MODE=cognito`. API Gateway validates Cognito JWT issuer, app-client audience, expiry, and the `openid` authorization scope; Lambda then requires exact membership in `sentineltwin-operators`. Health is the only public application route and exposes no bucket, cluster ID, provider error, or secret status detail. `AUTH_MODE=public` is accepted only with synthetic demo mode and no database secret; CloudFormation additionally removes S3/Bedrock runtime access and disables ingestion.
+- The Cognito pool is admin-invite only, requires software-token MFA, and the SPA client has no secret and permits only OAuth authorization code. The browser validates same-origin redirect configuration, limits scopes, uses PKCE S256, validates state and token type/client claims, keeps short-lived access/ID tokens in memory only, and deliberately discards the refresh token. `sessionStorage` holds only transient PKCE verifier/state values during the redirect.
 - The API and ingestion Lambdas have separate roles/concurrency. They can read exactly the database secret, invoke exactly the configured Bedrock foundation model, and access only required S3 prefixes. Neither can delete S3 data or administer CockroachDB/AWS.
 - Presigned satellite POSTs fix the object prefix/location, image content type, location metadata, AES256 encryption field, 1–5 MB content-length range, and 15-minute expiry. The browser receives no AWS credential.
 - S3 encryption, versioning, and full public-access blocks are enabled. GuardDuty Malware Protection scans only the quarantine prefix and adds its standard result tag. EventBridge routes GuardDuty scan verdicts—not S3 creation events—to the assessment Lambda. Bounded retries feed an encrypted SQS dead-letter queue.
@@ -18,10 +18,10 @@
 
 ## Required before a public launch
 
-1. Keep `AUTH_MODE=cognito` and replace the loopback/bootstrap CORS origin with the exact CloudFront/custom domain; never opt into wildcard for production.
+1. Keep `AUTH_MODE=cognito` and replace the loopback/bootstrap CORS origin with the exact CloudFront/custom domain. Wildcard and remote plaintext HTTP origins are rejected.
 2. Inspect `ccloud cluster networking allowlist list <cluster>`. Replace demo-only `0.0.0.0/0` with approved admin and stable application-egress CIDRs, or supported private connectivity; never guess Lambda egress ranges.
-3. Add role/tenant/location authorization. Cognito currently proves operator identity but all authenticated operators share one application scope.
-4. Require MFA according to operator policy, review Cognito invitation/recovery settings, and remove dormant users.
+3. Add tenant/location authorization if multiple organizations or incident scopes are introduced. The shipped operator group is a coarse role boundary, not row-level policy.
+4. Verify MFA enrollment and recovery during the cloud checks, review Cognito invitation/recovery settings, and remove dormant users.
 5. Add AWS WAF/rate rules if the endpoint is advertised broadly.
 6. Rotate the CockroachDB application password after recordings and remove broad/bootstrap users.
 7. Verify Bedrock model access/data-use terms; redact sensitive location/person data; deploy the GuardDuty plan; prove one clean and one safe rejection event; and define quarantined-threat retention/removal policy before accepting untrusted uploads.

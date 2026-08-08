@@ -9,6 +9,8 @@ primary_region=${COCKROACH_PRIMARY_REGION:-}
 apply_changes=${MULTI_REGION_APPLY:-false}
 confirmation=${MULTI_REGION_CONFIRM:-}
 global_reference_tables=${COCKROACH_GLOBAL_REFERENCE_TABLES:-true}
+python_binary=${PYTHON_BINARY:-python3}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ ! "$database_name" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "COCKROACH_DATABASE contains unsupported characters." >&2
@@ -18,27 +20,18 @@ if [[ -z "$regions_csv" ]]; then
   echo "Set COCKROACH_REGIONS to at least three existing cluster regions, comma-separated." >&2
   exit 2
 fi
-if [[ "$DATABASE_URL" != *"sslmode=verify-full"* ]]; then
-  echo "Refusing a CockroachDB Cloud URL without sslmode=verify-full." >&2
-  exit 2
-fi
+command -v "$python_binary" >/dev/null 2>&1 || { echo "Python is required." >&2; exit 1; }
+printf '%s' "$DATABASE_URL" | "$python_binary" "$script_dir/validate-database-url.py"
 
 if command -v cockroach >/dev/null 2>&1; then
   sql_exec() {
-    cockroach sql --url "$DATABASE_URL" --database "$database_name" --set=errexit=true --execute "$1"
+    COCKROACH_URL="$DATABASE_URL" cockroach sql --database "$database_name" --set=errexit=true --execute "$1"
   }
   sql_values() {
-    cockroach sql --url "$DATABASE_URL" --database "$database_name" --format=csv --execute "$1" | tail -n +2
-  }
-elif command -v psql >/dev/null 2>&1; then
-  sql_exec() {
-    psql --dbname="$DATABASE_URL" -v ON_ERROR_STOP=1 -c "$1"
-  }
-  sql_values() {
-    psql --dbname="$DATABASE_URL" -v ON_ERROR_STOP=1 -At -c "$1"
+    COCKROACH_URL="$DATABASE_URL" cockroach sql --database "$database_name" --format=csv --execute "$1" | tail -n +2
   }
 else
-  echo "Install the CockroachDB SQL CLI or psql." >&2
+  echo "Install the CockroachDB SQL CLI." >&2
   exit 1
 fi
 

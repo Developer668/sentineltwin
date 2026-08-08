@@ -1,5 +1,5 @@
 -- SentinelTwin persistent agent memory for CockroachDB 25.4+
--- Run with: cockroach sql --url "$DATABASE_URL" --file database/migrations/001_initial.sql
+-- Run with: COCKROACH_URL="$DATABASE_URL" cockroach sql --file database/migrations/001_initial.sql
 
 CREATE TABLE IF NOT EXISTS locations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

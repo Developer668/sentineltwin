@@ -54,8 +54,10 @@ if [[ "$auth_mode" == "public" ]]; then
   fi
   echo "WARNING: deploying an unauthenticated, synthetic-data-only demo; no CockroachDB secret will be resolved." >&2
 fi
-if [[ "$allowed_origin" == "*" ]]; then
-  echo "WARNING: wildcard CORS was explicitly requested; use loopback/bootstrap or the exact CloudFront WebUrl." >&2
+if [[ ! "$allowed_origin" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] && \
+   [[ ! "$allowed_origin" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]{1,5})?$ ]]; then
+  echo "CORS_ORIGIN must be one exact HTTPS origin; only localhost or 127.0.0.1 may use HTTP." >&2
+  exit 2
 fi
 
 command -v aws >/dev/null 2>&1 || { echo "AWS CLI is required." >&2; exit 1; }

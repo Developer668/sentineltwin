@@ -10,12 +10,13 @@ services:
       CORS_ORIGIN: http://localhost:5173
       PYTHONPATH: /workspace/backend:/tmp/python-deps
       SENTINEL_HOST: 0.0.0.0
+      SENTINEL_ALLOW_REMOTE_BIND: "true"
     command:
       - /bin/sh
       - -c
       - pip install --disable-pip-version-check --no-cache-dir --target /tmp/python-deps -r backend/requirements.txt && python -m sentineltwin.local_server
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
     volumes:
       - ./:/workspace:ro
     read_only: true
@@ -37,7 +38,7 @@ services:
       - -c
       - corepack enable && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     volumes:
       - ./frontend:/workspace/frontend
       - frontend_node_modules:/workspace/frontend/node_modules

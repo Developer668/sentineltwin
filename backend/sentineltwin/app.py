@@ -5,10 +5,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
+import math
 import re
 import time
-import traceback
 import uuid
 from typing import Any
 from urllib.parse import parse_qs, unquote
@@ -38,6 +37,20 @@ def _bool(value: str | None) -> bool:
     return (value or "").lower() in {"1", "true", "yes", "on"}
 
 
+def _bounded_number(payload: dict, key: str, low: float, high: float, *, integer: bool = False) -> None:
+    if key not in payload:
+        return
+    value = payload[key]
+    if isinstance(value, bool):
+        raise ValidationError(f"{key} must be numeric")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{key} must be numeric") from exc
+    if not math.isfinite(number) or number < low or number > high or (integer and not number.is_integer()):
+        raise ValidationError(f"{key} must be between {low:g} and {high:g}")
+
+
 class SentinelAPI:
     def __init__(self, settings: Settings, repository, aws: AWSIntegrations):
         self.settings = settings
@@ -54,6 +67,18 @@ class SentinelAPI:
             "providers": self.aws.status(),
         }
 
+    @property
+    def public_meta(self) -> dict:
+        """Minimal metadata safe to return before API authorization."""
+        return {
+            "mode": self.repository.mode,
+            "memory_provider": self.repository.provider,
+            "persistence": {
+                "provider": self.repository.provider,
+                "durable": self.repository.mode == "production",
+            },
+        }
+
     def dispatch(self, method: str, path: str, query: dict[str, str], body: dict | None) -> tuple[int, Any, dict | None]:
         path = path.rstrip("/") or "/"
         if path == "/":
@@ -62,17 +87,31 @@ class SentinelAPI:
             try:
                 health = self.repository.health()
                 health_status = 200 if health.get("status") == "healthy" else 503
-                return health_status, {**health, "service": "sentineltwin-api", "timestamp": now_iso(), "aws": self.aws.status()}, None
-            except Exception as exc:
+                public_health = {
+                    "status": health.get("status", "degraded"),
+                    "service": "sentineltwin-api",
+                    "mode": self.repository.mode,
+                    "database": health.get("database", "unavailable"),
+                    "data_persistence": {
+                        "provider": self.repository.provider,
+                        "durable": self.repository.mode == "production",
+                    },
+                    "timestamp": now_iso(),
+                    "aws": self.aws.public_status(),
+                }
+                if health.get("configuration_status"):
+                    public_health["configuration_status"] = health["configuration_status"]
+                return health_status, public_health, None
+            except Exception:
                 LOGGER.exception("Health check failed")
                 return 503, {
                     "status": "degraded",
                     "service": "sentineltwin-api",
                     "mode": self.repository.mode,
                     "database": "unavailable",
-                    "error": type(exc).__name__,
+                    "data_persistence": {"provider": self.repository.provider, "durable": False},
                     "timestamp": now_iso(),
-                    "aws": self.aws.status(),
+                    "aws": self.aws.public_status(),
                 }, None
 
         if path == "/api/dashboard" and method == "GET":
@@ -81,16 +120,19 @@ class SentinelAPI:
             items = self.repository.list_locations(query.get("status"), _limit(query.get("limit"), 100))
             return 200, {"locations": items, "count": len(items)}, None
         if path == "/api/locations" and method == "POST":
-            return 201, self.repository.create_location(body or {}), None
+            return 201, self._create_location(body or {}), None
         if path == "/api/locations/nearby" and method == "GET":
             try:
                 latitude = float(query.get("latitude", query.get("lat", "")))
                 longitude = float(query.get("longitude", query.get("lng", query.get("lon", ""))))
-                radius_km = max(0.1, min(1000, float(query.get("radius_km", "100"))))
+                radius_km = float(query.get("radius_km", "100"))
             except ValueError as exc:
-                raise ValidationError("latitude and longitude are required numeric query parameters") from exc
+                raise ValidationError("latitude, longitude, and radius_km must be numeric") from exc
+            if not all(math.isfinite(value) for value in (latitude, longitude, radius_km)):
+                raise ValidationError("latitude, longitude, and radius_km must be finite")
             if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
                 raise ValidationError("latitude or longitude is outside its valid range")
+            radius_km = max(0.1, min(1000, radius_km))
             items = self.repository.nearby_locations(latitude, longitude, radius_km, _limit(query.get("limit"), 25, 100))
             return 200, {"locations": items, "count": len(items), "radius_km": radius_km}, None
         match = re.fullmatch(r"/api/locations/([^/]+)", path)
@@ -106,7 +148,7 @@ class SentinelAPI:
             )
             return 200, {"memories": items, "count": len(items), "retrieval": "vector" if query.get("q") or query.get("query") else "recency"}, None
         if path == "/api/memories" and method == "POST":
-            return 201, self.repository.create_memory(body or {}), None
+            return 201, self._create_memory(body or {}), None
         if path == "/api/memories/stats" and method == "GET":
             return 200, self.repository.memory_stats(), None
 
@@ -238,6 +280,59 @@ class SentinelAPI:
             "memoryStats": self.repository.memory_stats(),
         }
 
+    def _create_location(self, payload: dict) -> dict:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > 160:
+            raise ValidationError("name must be a non-empty string of 160 characters or fewer")
+        for key, maximum in (("region", 120), ("terrain", 500), ("satellite_source", 120)):
+            value = payload.get(key)
+            if value is not None and (not isinstance(value, str) or len(value) > maximum):
+                raise ValidationError(f"{key} must be a string of {maximum} characters or fewer")
+        for key, low, high, integer in (
+            ("latitude", -90, 90, False),
+            ("longitude", -180, 180, False),
+            ("fire_risk", 0, 1, False),
+            ("earthquake_risk", 0, 1, False),
+            ("combined_risk", 0, 1, False),
+            ("vegetation_density", 0, 1, False),
+            ("soil_amplification", 0.5, 2.5, False),
+            ("moisture_percent", 0, 100, False),
+            ("wind_speed_mph", 0, 250, False),
+            ("slope_degrees", 0, 90, False),
+            ("population", 0, 100_000_000, True),
+            ("critical_facilities", 0, 100_000, True),
+        ):
+            _bounded_number(payload, key, low, high, integer=integer)
+        if "latitude" not in payload or "longitude" not in payload:
+            raise ValidationError("latitude and longitude are required")
+        return self.repository.create_location(payload)
+
+    def _create_memory(self, payload: dict) -> dict:
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip() or len(content) > 12_000:
+            raise ValidationError("content must be a non-empty string of 12000 characters or fewer")
+        title = payload.get("title")
+        if title is not None and (not isinstance(title, str) or len(title) > 200):
+            raise ValidationError("title must be a string of 200 characters or fewer")
+        hazard = str(payload.get("hazard", "multi_hazard")).strip().lower().replace("-", "_")
+        hazard = {"wildfire": "fire", "seismic": "earthquake", "composite": "multi_hazard"}.get(hazard, hazard)
+        if hazard not in {"fire", "earthquake", "multi_hazard"}:
+            raise ValidationError("hazard must be fire, earthquake, or multi_hazard")
+        payload = {**payload, "hazard": hazard}
+        for key, maximum in (("agent_id", 128), ("memory_type", 64), ("location_id", 128), ("simulation_id", 128)):
+            value = payload.get(key)
+            if value is not None and (not isinstance(value, str) or len(value) > maximum):
+                raise ValidationError(f"{key} must be a string of {maximum} characters or fewer")
+        for key in ("importance", "confidence", "effectiveness"):
+            _bounded_number(payload, key, 0, 1)
+        for key in ("metadata", "outcome"):
+            value = payload.get(key)
+            if value is not None and not isinstance(value, dict):
+                raise ValidationError(f"{key} must be a JSON object")
+            if value is not None and len(json.dumps(value, separators=(",", ":"), allow_nan=False)) > 32_000:
+                raise ValidationError(f"{key} must be 32000 characters or fewer")
+        return self.repository.create_memory(payload)
+
     def _resolve_location(self, location_id: str) -> dict:
         """Resolve a database id or a stable UI slug to one location."""
         try:
@@ -300,7 +395,10 @@ class SentinelAPI:
         hazard = {"seismic": "earthquake", "composite": "multi_hazard", "wildfire": "fire"}.get(hazard, hazard)
         location = self._resolve_location(location_id)
         location_id = str(location["id"])
-        parameters = dict(payload.get("parameters") or {})
+        raw_parameters = payload.get("parameters") or {}
+        if not isinstance(raw_parameters, dict):
+            raise ValidationError("parameters must be a JSON object")
+        parameters = dict(raw_parameters)
         for camel, snake in (
             ("horizonHours", "duration_hours"),
             ("cascadingImpacts", "cascading_impacts"),
@@ -311,12 +409,18 @@ class SentinelAPI:
         if "duration_hours" in parameters and "duration_minutes" not in parameters:
             parameters["duration_minutes"] = float(parameters["duration_hours"]) * 60
         memory_query = str(payload.get("memory_query") or f"{hazard} {location['terrain']} emergency response successful tactics")
+        if len(memory_query) > 2000:
+            raise ValidationError("memory_query must be 2000 characters or fewer")
         use_memory = bool(parameters.get("use_memory", payload.get("useMemory", True)))
+        try:
+            memory_limit = max(1, min(8, int(payload.get("memory_limit", payload.get("memoryLimit", 4)))))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("memory_limit must be an integer") from exc
         memories = (
             self.repository.list_memories(
                 query=memory_query,
                 hazard=hazard if hazard != "multi_hazard" else None,
-                limit=max(1, min(8, int(payload.get("memory_limit", payload.get("memoryLimit", 4))))),
+                limit=memory_limit,
             )
             if use_memory
             else []
@@ -386,7 +490,7 @@ class SentinelAPI:
             f"{payload.get('assessment', 'the recommended resource plan was reviewed')}"
         )
         recommendation = payload.get("recommended_tactic") or simulation["recommendations"][0]
-        return self.repository.create_memory(
+        return self._create_memory(
             {
                 "location_id": simulation["location_id"],
                 "simulation_id": simulation_id,
@@ -404,6 +508,10 @@ class SentinelAPI:
 
 
 API = SentinelAPI(SETTINGS, REPOSITORY, AWS)
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
 
 
 def _event_parts(event: dict) -> tuple[str, str, dict[str, str], dict | None]:
@@ -435,18 +543,32 @@ def _event_parts(event: dict) -> tuple[str, str, dict[str, str], dict | None]:
     if not body_value:
         body = None
     elif isinstance(body_value, dict):
+        try:
+            encoded = json.dumps(body_value, allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise ApiError(400, "invalid_json", "Request body must contain finite JSON values") from exc
+        if len(encoded.encode("utf-8")) > MAX_API_BODY_BYTES:
+            raise PayloadTooLarge()
         body = body_value
     else:
         try:
-            body = json.loads(body_value)
-        except json.JSONDecodeError as exc:
+            body = json.loads(body_value, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, ValueError) as exc:
             raise ApiError(400, "invalid_json", "Request body must be valid JSON") from exc
     if body is not None and not isinstance(body, dict):
         raise ApiError(400, "invalid_json", "Request body must be a JSON object")
     return method, path, query, body
 
 
-def _response(status: int, payload: Any, request_id: str, elapsed_ms: float, extra_headers: dict | None = None) -> dict:
+def _response(
+    status: int,
+    payload: Any,
+    request_id: str,
+    elapsed_ms: float,
+    extra_headers: dict | None = None,
+    *,
+    meta: dict | None = None,
+) -> dict:
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Access-Control-Allow-Origin": SETTINGS.cors_origin,
@@ -454,15 +576,45 @@ def _response(status: int, payload: Any, request_id: str, elapsed_ms: float, ext
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
         "Access-Control-Expose-Headers": "X-Request-Id,X-Sentinel-Mode",
         "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
         "X-Request-Id": request_id,
         "X-Sentinel-Mode": REPOSITORY.mode,
         **(extra_headers or {}),
     }
     envelope = {
         "data": payload,
-        "meta": {**API.meta, "request_id": request_id, "elapsed_ms": round(elapsed_ms, 2)},
+        "meta": {**(meta or API.public_meta), "request_id": request_id, "elapsed_ms": round(elapsed_ms, 2)},
     }
-    return {"statusCode": status, "headers": headers, "body": json.dumps(envelope, separators=(",", ":"), default=str), "isBase64Encoded": False}
+    body = "" if status == 204 else json.dumps(envelope, separators=(",", ":"), default=str, allow_nan=False)
+    return {"statusCode": status, "headers": headers, "body": body, "isBase64Encoded": False}
+
+
+def _operator_groups(event: dict) -> set[str]:
+    claims = (((event.get("requestContext") or {}).get("authorizer") or {}).get("jwt") or {}).get("claims") or {}
+    raw_groups = claims.get("cognito:groups")
+    if isinstance(raw_groups, list):
+        return {str(group).strip() for group in raw_groups if str(group).strip()}
+    if not isinstance(raw_groups, str):
+        return set()
+    value = raw_groups.strip()
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            decoded = json.loads(value)
+            if isinstance(decoded, list):
+                return {str(group).strip() for group in decoded if str(group).strip()}
+        except json.JSONDecodeError:
+            value = value[1:-1]
+    return {group for group in re.split(r"[\s,]+", value) if group}
+
+
+def _require_operator(event: dict, method: str, path: str) -> None:
+    required_group = SETTINGS.required_operator_group
+    if not required_group or method == "OPTIONS" or path.rstrip("/") in {"/health", "/api/health"}:
+        return
+    if required_group not in _operator_groups(event):
+        raise ApiError(403, "forbidden", "Operator group membership is required")
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
@@ -472,26 +624,34 @@ def lambda_handler(event: dict, context: Any) -> dict:
         or getattr(context, "aws_request_id", None)
         or str(uuid.uuid4())
     )
+    response_meta = API.public_meta
     try:
         method, path, query, body = _event_parts(event)
         if method == "OPTIONS":
-            return _response(204, None, request_id, (time.perf_counter() - started) * 1000)
+            return _response(204, None, request_id, (time.perf_counter() - started) * 1000, meta=response_meta)
+        _require_operator(event, method, path)
+        if path.rstrip("/") not in {"/health", "/api/health"}:
+            response_meta = API.meta
         status, payload, headers = API.dispatch(method, path, query, body)
-        return _response(status, payload, request_id, (time.perf_counter() - started) * 1000, headers)
+        return _response(status, payload, request_id, (time.perf_counter() - started) * 1000, headers, meta=response_meta)
     except ApiError as exc:
         return _response(
             exc.status,
             {"error": {"code": exc.code, "message": exc.message, "details": exc.details}},
             request_id,
             (time.perf_counter() - started) * 1000,
+            meta=response_meta,
         )
-    except Exception as exc:
+    except Exception:
         LOGGER.exception("Unhandled API error request_id=%s", request_id)
         error = {"code": "internal_error", "message": "The request could not be completed", "request_id": request_id}
-        if os.getenv("SENTINEL_DEBUG", "").lower() in {"1", "true"}:
-            error["debug"] = f"{type(exc).__name__}: {exc}"
-            error["trace"] = traceback.format_exc().splitlines()[-5:]
-        return _response(500, {"error": error}, request_id, (time.perf_counter() - started) * 1000)
+        return _response(
+            500,
+            {"error": error},
+            request_id,
+            (time.perf_counter() - started) * 1000,
+            meta=response_meta,
+        )
 
 
 def _malware_scan_events(event: dict) -> list[dict]:

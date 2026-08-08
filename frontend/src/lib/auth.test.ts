@@ -4,8 +4,13 @@ import { cognitoAuth } from './auth'
 
 function enableCognito() {
   vi.stubEnv('VITE_COGNITO_DOMAIN', 'https://sentineltwin.auth.us-west-2.amazoncognito.com')
-  vi.stubEnv('VITE_COGNITO_CLIENT_ID', 'public-spa-client')
+  vi.stubEnv('VITE_COGNITO_CLIENT_ID', 'publicspaclient')
   vi.stubEnv('VITE_COGNITO_REDIRECT_URI', `${window.location.origin}/`)
+}
+
+function jwt(claims: Record<string, unknown>) {
+  const payload = btoa(JSON.stringify(claims)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+  return `header.${payload}.signature`
 }
 
 describe('Cognito PKCE session handling', () => {
@@ -44,12 +49,12 @@ describe('Cognito PKCE session handling', () => {
     sessionStorage.setItem('sentineltwin.auth.verifier', 'pkce-verifier')
     sessionStorage.setItem('sentineltwin.auth.state', 'verified-state')
     window.history.replaceState({}, '', '/?code=authorization-code&state=verified-state')
-    const claims = btoa(JSON.stringify({ email: 'operator@example.com' })).replace(/=/g, '')
-    const idToken = `header.${claims}.signature`
+    const idToken = jwt({ email: 'operator@example.com', token_use: 'id', aud: 'publicspaclient' })
+    const accessToken = jwt({ token_use: 'access', client_id: 'publicspaclient' })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ access_token: 'access-token', id_token: idToken, refresh_token: 'must-not-be-stored', expires_in: 3600 }),
+        json: async () => ({ access_token: accessToken, id_token: idToken, refresh_token: 'must-not-be-stored', expires_in: 3600, token_type: 'Bearer' }),
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -64,8 +69,8 @@ describe('Cognito PKCE session handling', () => {
     await sentinelApi.getDashboard()
 
     expect(state).toMatchObject({ enabled: true, authenticated: true, userLabel: 'operator@example.com' })
-    expect(cognitoAuth.getAccessToken()).toBe('access-token')
-    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer access-token')
+    expect(cognitoAuth.getAccessToken()).toBe(accessToken)
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer ${accessToken}`)
     expect(sessionStorage.length).toBe(0)
     expect(localStorage.length).toBe(0)
     expect(window.location.search).toBe('')
@@ -80,7 +85,11 @@ describe('Cognito PKCE session handling', () => {
     window.history.replaceState({}, '', '/?code=authorization-code&state=verified-state')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ access_token: 'short-lived-token', expires_in: 60 }),
+      json: async () => ({
+        access_token: jwt({ token_use: 'access', client_id: 'publicspaclient' }),
+        expires_in: 60,
+        token_type: 'Bearer',
+      }),
     }))
 
     expect((await cognitoAuth.completeCallback()).authenticated).toBe(true)
@@ -93,12 +102,55 @@ describe('Cognito PKCE session handling', () => {
 
   it('rejects non-HTTPS Cognito domains outside loopback development', () => {
     vi.stubEnv('VITE_COGNITO_DOMAIN', 'http://auth.example.com')
-    vi.stubEnv('VITE_COGNITO_CLIENT_ID', 'public-spa-client')
+    vi.stubEnv('VITE_COGNITO_CLIENT_ID', 'publicspaclient')
 
     expect(cognitoAuth.state()).toMatchObject({
       enabled: false,
       authenticated: false,
       error: 'Cognito domain must use HTTPS outside localhost development.',
     })
+  })
+
+  it('rejects a cross-origin redirect URI before starting sign-in', () => {
+    enableCognito()
+    vi.stubEnv('VITE_COGNITO_REDIRECT_URI', 'https://attacker.example/callback')
+
+    expect(cognitoAuth.state()).toMatchObject({
+      enabled: false,
+      authenticated: false,
+      error: 'Cognito redirect URI must be a same-origin URL without credentials or parameters.',
+    })
+  })
+
+  it('rejects unapproved OAuth scopes', () => {
+    enableCognito()
+    vi.stubEnv('VITE_COGNITO_SCOPES', 'openid email aws.cognito.signin.user.admin')
+
+    expect(cognitoAuth.state()).toMatchObject({
+      enabled: false,
+      error: expect.stringContaining('may contain only'),
+    })
+  })
+
+  it('rejects token responses with the wrong client or token type', async () => {
+    enableCognito()
+    sessionStorage.setItem('sentineltwin.auth.verifier', 'pkce-verifier')
+    sessionStorage.setItem('sentineltwin.auth.state', 'verified-state')
+    window.history.replaceState({}, '', '/?code=authorization-code&state=verified-state')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: jwt({ token_use: 'access', client_id: 'different-client' }),
+        expires_in: 3600,
+        token_type: 'DPoP',
+      }),
+    }))
+
+    expect(await cognitoAuth.completeCallback()).toMatchObject({
+      authenticated: false,
+      error: expect.stringContaining('secure token exchange'),
+    })
+    expect(cognitoAuth.getAccessToken()).toBeNull()
+    expect(sessionStorage.length).toBe(0)
   })
 })

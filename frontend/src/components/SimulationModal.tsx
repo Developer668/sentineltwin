@@ -14,6 +14,8 @@ interface SimulationModalProps {
   onComplete: (result: SimulationResult) => void
 }
 
+const hazardOrder: HazardLayer[] = ['fire', 'seismic', 'composite']
+
 function providerLabel(provider: string): string {
   if (provider === 'amazon-bedrock') return 'Amazon Bedrock'
   if (provider === 'deterministic-planner') return 'Deterministic planner'
@@ -69,7 +71,7 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && status !== 'running' && onClose()}>
-      <div ref={dialogRef} className="simulation-modal" role="dialog" aria-modal="true" aria-labelledby="simulation-title">
+      <div ref={dialogRef} className="simulation-modal" role="dialog" aria-modal="true" aria-labelledby="simulation-title" aria-describedby={error ? 'simulation-error' : undefined} aria-busy={status === 'running'}>
         <header>
           <div><span>Scenario builder</span><h2 id="simulation-title">Run compound simulation</h2></div>
           <button className="icon-button" type="button" onClick={onClose} disabled={status === 'running'} aria-label="Close simulation" data-autofocus><X size={18} /></button>
@@ -103,6 +105,7 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
               )}
               <small className="agent-loop-path">{result.learningLoop} · recalled {result.recalledMemoryIds.length ? result.recalledMemoryIds.join(', ') : 'no memory IDs'}</small>
             </section>
+            <div className="human-review-notice"><ShieldAlert size={15} /><span><strong>Human review required</strong><small>Decision support only—validate recommendations against current incident command and field intelligence.</small></span></div>
             <button className="primary-button full" type="button" onClick={onClose}>{result.persisted ? 'Review learned outcome' : 'Return to command center'} <ChevronRight size={16} /></button>
           </div>
         ) : (
@@ -114,10 +117,17 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
 
             <div className="form-section">
               <label className="field-label">Primary hazard</label>
-              <div className="hazard-options">
-                <button type="button" className={hazard === 'fire' ? 'selected' : ''} onClick={() => setHazard('fire')}><Flame size={17} /> Wildfire</button>
-                <button type="button" className={hazard === 'seismic' ? 'selected' : ''} onClick={() => setHazard('seismic')}><Activity size={17} /> Earthquake</button>
-                <button type="button" className={hazard === 'composite' ? 'selected' : ''} onClick={() => setHazard('composite')}><ShieldAlert size={17} /> Compound</button>
+              <div className="hazard-options" role="radiogroup" aria-label="Primary hazard" onKeyDown={(event) => {
+                if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+                event.preventDefault()
+                const direction = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1
+                const next = hazardOrder[(hazardOrder.indexOf(hazard) + direction + hazardOrder.length) % hazardOrder.length]
+                setHazard(next)
+                window.requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>(`[data-hazard="${next}"]`)?.focus())
+              }}>
+                <button data-hazard="fire" type="button" role="radio" aria-checked={hazard === 'fire'} tabIndex={hazard === 'fire' ? 0 : -1} className={hazard === 'fire' ? 'selected' : ''} onClick={() => setHazard('fire')}><Flame size={17} /> Wildfire</button>
+                <button data-hazard="seismic" type="button" role="radio" aria-checked={hazard === 'seismic'} tabIndex={hazard === 'seismic' ? 0 : -1} className={hazard === 'seismic' ? 'selected' : ''} onClick={() => setHazard('seismic')}><Activity size={17} /> Earthquake</button>
+                <button data-hazard="composite" type="button" role="radio" aria-checked={hazard === 'composite'} tabIndex={hazard === 'composite' ? 0 : -1} className={hazard === 'composite' ? 'selected' : ''} onClick={() => setHazard('composite')}><ShieldAlert size={17} /> Compound</button>
               </div>
             </div>
 
@@ -148,10 +158,10 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
             </label>
 
             {status === 'running' && (
-              <div className="running-state" aria-live="polite"><RefreshCw className="spin" size={16} /><span><strong>Agents are simulating this scenario</strong><small>Retrieving memory → forecasting spread → optimizing resources</small></span></div>
+              <div className="running-state" role="status" aria-live="polite"><RefreshCw className="spin" size={16} /><span><strong>Agents are simulating this scenario</strong><small>Retrieving memory → forecasting spread → optimizing resources</small></span></div>
             )}
 
-            {error && <div className="workflow-error" role="alert">{error}</div>}
+            {error && <div id="simulation-error" className="workflow-error" role="alert">{error}</div>}
 
             <footer>
               <button className="secondary-button" type="button" onClick={onClose} disabled={status === 'running'}>Cancel</button>

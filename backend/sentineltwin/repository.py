@@ -693,12 +693,11 @@ class CockroachRepository:
                 rows = ann(hazard, limit)
             if rows:
                 ids = [row["id"] for row in rows]
-                placeholders = ",".join(["%s"] * len(ids))
                 try:
                     self._write(
-                        lambda cursor: cursor.execute(
-                            f"UPDATE agent_memories SET access_count=access_count+1, last_accessed_at=now() WHERE id IN ({placeholders})",
-                            tuple(ids),
+                        lambda cursor: cursor.executemany(
+                            "UPDATE agent_memories SET access_count=access_count+1, last_accessed_at=now() WHERE id=%s",
+                            [(memory_id,) for memory_id in ids],
                         )
                     )
                     for row in rows:
@@ -973,13 +972,20 @@ class CockroachRepository:
         return self._simulation(row)
 
     def update_simulation(self, simulation_id: str, updates: dict) -> dict:
-        allowed = {"agent_plan", "artifact", "memory_context"}
-        fields = [key for key in updates if key in allowed]
+        statements = {
+            "agent_plan": "UPDATE simulations SET agent_plan=%s::JSONB WHERE id=%s",
+            "artifact": "UPDATE simulations SET artifact=%s::JSONB WHERE id=%s",
+            "memory_context": "UPDATE simulations SET memory_context=%s::JSONB WHERE id=%s",
+        }
+        fields = [key for key in updates if key in statements]
         if not fields:
             return self.get_simulation(simulation_id)
-        assignments = ", ".join(f"{field}=%s::JSONB" for field in fields)
-        values = [json.dumps(updates[field]) for field in fields] + [simulation_id]
-        self._write(lambda cursor: cursor.execute(f"UPDATE simulations SET {assignments} WHERE id=%s", tuple(values)))
+
+        def operation(cursor):
+            for field in fields:
+                cursor.execute(statements[field], (json.dumps(updates[field]), simulation_id))
+
+        self._write(operation)
         return self.get_simulation(simulation_id)
 
     def list_agents(self) -> list[dict]:

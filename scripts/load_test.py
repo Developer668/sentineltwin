@@ -105,7 +105,8 @@ def request_once(
     started = time.perf_counter()
     status = 0
     try:
-        with urlopen(
+        # validate_base_url permits only HTTPS or loopback HTTP before this request is created.
+        with urlopen(  # nosec B310
             Request(f"{base_url}{path}", data=body, headers=headers, method=method),
             timeout=timeout,
             context=ssl.create_default_context(),
@@ -136,7 +137,8 @@ def run_load(
 
     def worker(index: int) -> list[Sample]:
         samples: list[Sample] = []
-        rng = random.Random(7_919 + index)
+        # Deterministic route selection keeps load comparisons reproducible; it is not security randomness.
+        rng = random.Random(7_919 + index)  # nosec B311
         while time.perf_counter() < deadline:
             samples.append(request_once(base_url, workload, token, timeout, rng))
         return samples

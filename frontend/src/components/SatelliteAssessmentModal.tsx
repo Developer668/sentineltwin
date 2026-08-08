@@ -20,7 +20,7 @@ const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const maximumBytes = 3.5 * 1024 * 1024
 const santaRosaSentinelKey = 'tiles/10/S/EH/2024/7/15/0/R60m/TCI.jp2'
 const sentinelKeyPattern = /^tiles\/(?:[1-9]|[1-5][0-9]|60)\/[A-Z]\/[A-Z]{2}\/20[1-9][0-9]\/(?:[1-9]|1[0-2])\/(?:[1-9]|[12][0-9]|3[01])\/[0-9]{1,3}\/R60m\/TCI\.jp2$/
-const modeOrder: ImageryMode[] = ['demo', 'upload', 'open-data']
+const allModes: ImageryMode[] = ['demo', 'upload', 'open-data']
 
 const stageCopy: Record<Exclude<AssessmentStage, 'select' | 'complete' | 'error'>, { title: string; detail: string }> = {
   authorizing: { title: 'Authorizing secure upload', detail: 'Requesting a short-lived Amazon S3 form' },
@@ -33,7 +33,9 @@ const stageCopy: Record<Exclude<AssessmentStage, 'select' | 'complete' | 'error'
 export function SatelliteAssessmentModal({ open, location, runtime, onClose, onSubmit, onComplete }: SatelliteAssessmentModalProps) {
   const inputId = useId()
   const dialogRef = useRef<HTMLDivElement>(null)
-  const [mode, setMode] = useState<ImageryMode>('demo')
+  const demoAllowed = runtime.persistence !== 'cockroachdb'
+  const modeOrder = demoAllowed ? allModes : allModes.filter((item) => item !== 'demo')
+  const [mode, setMode] = useState<ImageryMode>(demoAllowed ? 'demo' : 'open-data')
   const [file, setFile] = useState<File | null>(null)
   const [sourceKey, setSourceKey] = useState(santaRosaSentinelKey)
   const [stage, setStage] = useState<AssessmentStage>('select')
@@ -46,13 +48,13 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
 
   useEffect(() => {
     if (!open) return
-    setMode('demo')
+    setMode(demoAllowed ? 'demo' : 'open-data')
     setFile(null)
     setSourceKey(santaRosaSentinelKey)
     setStage('select')
     setError(null)
     setResult(null)
-  }, [open, location.id])
+  }, [demoAllowed, open, location.id])
 
   useEffect(() => {
     if (!open) return
@@ -88,6 +90,11 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
   }
 
   const assess = async () => {
+    if (mode === 'demo' && !demoAllowed) {
+      setError('Deterministic imagery is disabled when CockroachDB persistence is active. Use a scanned upload or Sentinel-2 scene.')
+      setStage('error')
+      return
+    }
     if (mode === 'upload' && !file) {
       setError('Choose an image before starting the assessment.')
       setStage('error')
@@ -130,7 +137,7 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
-      <div ref={dialogRef} className="satellite-modal" role="dialog" aria-modal="true" aria-labelledby="satellite-title">
+      <div ref={dialogRef} className="satellite-modal" role="dialog" aria-modal="true" aria-labelledby="satellite-title" aria-describedby={error ? 'satellite-error' : undefined} aria-busy={busy}>
         <header>
           <div><span>Satellite risk assessor</span><h2 id="satellite-title">Analyze source imagery</h2></div>
           <button className="icon-button" type="button" onClick={onClose} disabled={busy} aria-label="Close imagery assessment" data-autofocus><X size={18} /></button>
@@ -162,6 +169,7 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
                 <small>{result.provider} · {result.confidence}% confidence{result.ingestionAuthority ? ` · ${result.ingestionAuthority} authoritative` : ''}{result.persisted ? '' : ' · no durable write'}</small>
               </span>
             </div>
+            <div className="human-review-notice"><ShieldCheck size={15} /><span><strong>Human review required</strong><small>Imagery findings are decision support—not a forecast or authorization to deploy resources.</small></span></div>
             <button className="primary-button full" type="button" onClick={onClose}>Review updated risk zone</button>
           </div>
         ) : (
@@ -182,8 +190,8 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
               setError(null)
               window.requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>(`[data-imagery-mode="${next}"]`)?.focus())
             }}>
-              <button data-imagery-mode="demo" type="button" role="radio" aria-checked={mode === 'demo'} tabIndex={mode === 'demo' ? 0 : -1} className={mode === 'demo' ? 'selected' : ''} onClick={() => { setMode('demo'); setStage('select'); setError(null) }}>
-                <ImageIcon size={18} /><span><strong>Built-in demo tile</strong><small>Deterministic and zero setup</small></span><i />
+              <button data-imagery-mode="demo" type="button" role="radio" aria-checked={mode === 'demo'} tabIndex={mode === 'demo' ? 0 : -1} className={mode === 'demo' ? 'selected' : ''} disabled={!demoAllowed} onClick={() => { setMode('demo'); setStage('select'); setError(null) }}>
+                <ImageIcon size={18} /><span><strong>Built-in demo tile</strong><small>{demoAllowed ? 'Deterministic and zero setup' : 'Disabled for persistent production'}</small></span><i />
               </button>
               <button data-imagery-mode="upload" type="button" role="radio" aria-checked={mode === 'upload'} tabIndex={mode === 'upload' ? 0 : -1} className={mode === 'upload' ? 'selected' : ''} onClick={() => { setMode('upload'); setStage('select'); setError(null) }}>
                 <CloudUpload size={18} /><span><strong>Upload satellite image</strong><small>Private quarantine → GuardDuty scan</small></span><i />
@@ -213,8 +221,9 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
                     onChange={(event) => { setSourceKey(event.target.value); setError(null); setStage('select') }}
                     spellCheck={false}
                     aria-invalid={!validSourceKey}
+                    aria-describedby="sentinel-source-note"
                   />
-                  <small className="source-key-note">Verified Santa Rosa tile sample · replace the key when targeting another zone</small>
+                  <small id="sentinel-source-note" className="source-key-note">Verified Santa Rosa tile sample · replace the key when targeting another zone</small>
                 </div>
               ) : previewUrl ? (
                 <>
@@ -241,7 +250,7 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
             {mode === 'upload' && file && <button className="replace-file" type="button" onClick={() => document.getElementById(inputId)?.click()}>Replace selected image</button>}
 
             {busy && stage !== 'select' && stage !== 'complete' && stage !== 'error' && (
-              <div className="assessment-progress" aria-live="polite">
+              <div className="assessment-progress" role="status" aria-live="polite">
                 <RefreshCw className="spin" size={18} />
                 <span><strong>{stageCopy[stage].title}</strong><small>{stage === 'assessing'
                   ? mode === 'demo' ? runtime.apiConnected ? 'Running the deterministic API assessor' : 'Running the deterministic local preview' : 'Running Bedrock only after the clean GuardDuty verdict'
@@ -249,7 +258,7 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
               </div>
             )}
 
-            {error && <div className="assessment-error" role="alert">{error}</div>}
+            {error && <div id="satellite-error" className="assessment-error" role="alert">{error}</div>}
 
             <div className="assessment-runtime-note">
               <span className={`source-dot ${runtime.source}`} />

@@ -84,7 +84,7 @@ database_pid=$!
 
 ready=false
 for ((_attempt=1; _attempt<=80; _attempt++)); do
-  if "$cockroach_binary" sql --url "$default_url" --execute 'SELECT 1' >/dev/null 2>&1; then
+  if COCKROACH_URL="$default_url" "$cockroach_binary" sql --execute 'SELECT 1' >/dev/null 2>&1; then
     ready=true
     break
   fi
@@ -96,7 +96,7 @@ done
 [[ "$ready" == "true" ]] || { echo "CockroachDB did not become ready." >&2; exit 1; }
 
 echo "Applying SentinelTwin schema to isolated CockroachDB on loopback."
-"$cockroach_binary" sql --url "$default_url" --set=errexit=true \
+COCKROACH_URL="$default_url" "$cockroach_binary" sql --set=errexit=true \
   --execute 'CREATE DATABASE IF NOT EXISTS sentineltwin;'
 DATABASE_URL="$database_url" "$python_binary" database/migrate.py
 
@@ -125,6 +125,6 @@ done
 [[ "$api_ready" == "true" ]] || { echo "Local API did not become ready." >&2; exit 1; }
 
 REQUIRE_PERSISTENT=true API_BASE_URL=http://127.0.0.1:8787/api ./scripts/smoke-test.sh
-"$cockroach_binary" sql --url "$database_url" --set=errexit=true --file database/verify.sql
+COCKROACH_URL="$database_url" "$cockroach_binary" sql --set=errexit=true --file database/verify.sql
 
 echo "Isolated CockroachDB schema, vector query, API read, and durable simulation write all passed."

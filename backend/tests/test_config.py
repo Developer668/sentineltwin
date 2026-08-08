@@ -2,7 +2,7 @@ import boto3
 import pytest
 from sentineltwin.app import SentinelAPI
 from sentineltwin.aws import AWSIntegrations
-from sentineltwin.config import Settings, validate_database_url
+from sentineltwin.config import Settings, validate_cors_origin, validate_database_url
 from sentineltwin.errors import ServiceUnavailable
 from sentineltwin.repository import (
     CockroachRepository,
@@ -48,6 +48,26 @@ def test_repository_fails_closed_for_remote_insecure_url(monkeypatch):
     settings = Settings.from_env()
     with pytest.raises(ValueError, match="sslmode=verify-full"):
         CockroachRepository(settings)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "*",
+        "http://dashboard.example.com",
+        "https://user:secret@dashboard.example.com",
+        "https://dashboard.example.com/path",
+        "https://dashboard.example.com?token=secret",
+    ],
+)
+def test_cors_origin_rejects_wildcards_insecure_remote_http_and_non_origins(origin):
+    with pytest.raises(ValueError, match="CORS_ORIGIN"):
+        validate_cors_origin(origin)
+
+
+def test_cors_origin_accepts_exact_https_and_loopback_http():
+    assert validate_cors_origin("https://dashboard.example.com/") == "https://dashboard.example.com"
+    assert validate_cors_origin("http://127.0.0.1:5173") == "http://127.0.0.1:5173"
 
 
 def test_absent_demo_setting_preserves_zero_setup_local_demo(monkeypatch):

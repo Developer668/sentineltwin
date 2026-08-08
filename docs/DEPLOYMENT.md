@@ -62,7 +62,7 @@ make db-verify
 The default Basic demo cluster is not multi-region. Do not claim region survival from it. For an existing paid cluster that already has at least three physical CockroachDB regions, inspect the exact locality names first:
 
 ```bash
-cockroach sql --url "$DATABASE_URL" --execute 'SHOW REGIONS FROM CLUSTER;'
+COCKROACH_URL="$DATABASE_URL" cockroach sql --execute 'SHOW REGIONS FROM CLUSTER;'
 export COCKROACH_DATABASE=sentineltwin
 export COCKROACH_REGIONS='aws-us-west-2,aws-us-east-1,aws-us-east-2' # example only
 export COCKROACH_PRIMARY_REGION='aws-us-west-2'                       # example only
@@ -139,7 +139,7 @@ make deploy
 CloudFormation creates:
 
 - API Gateway HTTP API, JWT authorizer, API Lambda, logs, X-Ray, throttles, and alarms;
-- Cognito User Pool, no-secret SPA client, Hosted UI, authorization-code flow, and PKCE-compatible callbacks;
+- Cognito User Pool with required software-token MFA, `sentineltwin-operators` authorization group, no-secret SPA client, Hosted UI, authorization-code flow, and PKCE-compatible callbacks;
 - private/versioned artifact S3 with a quarantine prefix, GuardDuty Malware Protection and scan-result tags, verdict-filtered EventBridge rule, assessment Lambda, bounded retries, encrypted SQS dead-letter queue, logs, and alarm;
 - private/versioned web S3, CloudFront Origin Access Control, SPA fallback, cache/security headers;
 - narrowly scoped Bedrock, S3, Secrets Manager, EventBridge, SQS, and Lambda permissions.
@@ -161,7 +161,14 @@ aws cognito-idp admin-create-user \
   --user-attributes Name=email,Value="$OPERATOR_EMAIL" Name=email_verified,Value=true \
   --desired-delivery-mediums EMAIL \
   --region "$AWS_REGION"
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "$OPERATOR_EMAIL" \
+  --group-name sentineltwin-operators \
+  --region "$AWS_REGION"
 ```
+
+The API Lambda independently requires the verified `cognito:groups` claim to contain `sentineltwin-operators`; a valid pool token without that group receives `403`. MFA is required by the pool, so the first Hosted UI session also enrolls a software authenticator after the temporary-password challenge.
 
 `make deploy-web` reads `ApiUrl`, Cognito domain/client/callback/scopes, and the web bucket from stack outputs. It builds the SPA without any client secret, uploads it, sets `index.html` to no-cache, and invalidates CloudFront:
 
@@ -180,7 +187,7 @@ make deploy
 make deploy-web
 ```
 
-Open `WEB_URL` in a private browser, complete the temporary-password challenge, and sign in. The SPA uses OAuth authorization code + PKCE S256, keeps short-lived access/ID tokens only in memory, deliberately discards the refresh token, and sends the access token as `Bearer`. Only the one-time PKCE verifier/state is kept transiently in `sessionStorage` while the redirect completes, so reloading or closing the page requires another sign-in.
+Open `WEB_URL` in a private browser, complete the temporary-password and MFA enrollment challenges, and sign in. The SPA uses OAuth authorization code + PKCE S256, keeps short-lived access/ID tokens only in memory, deliberately discards the refresh token, and sends the access token as `Bearer`. Only the one-time PKCE verifier/state is kept transiently in `sessionStorage` while the redirect completes, so reloading or closing the page requires another sign-in.
 
 ## 7. Deployed smoke tests
 

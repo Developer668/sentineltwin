@@ -48,6 +48,9 @@ jobs:
       - name: Reproducible quality checks
         run: make lint
 
+      - name: Dependency and source security checks
+        run: make security
+
       - name: Public deployment is synthetic-only
         run: |
           set +e
@@ -144,13 +147,13 @@ jobs:
       - name: Download verified CockroachDB 25.4 binary
         run: |
           curl --fail --silent --show-error --location --remote-name \
-            https://binaries.cockroachdb.com/cockroach-v25.4.12.linux-amd64.tgz
+            https://binaries.cockroachdb.com/cockroach-v25.4.14.linux-amd64.tgz
           curl --fail --silent --show-error --location --remote-name \
-            https://binaries.cockroachdb.com/cockroach-v25.4.12.linux-amd64.tgz.sha256sum
-          sha256sum --check cockroach-v25.4.12.linux-amd64.tgz.sha256sum
-          tar -xzf cockroach-v25.4.12.linux-amd64.tgz
+            https://binaries.cockroachdb.com/cockroach-v25.4.14.linux-amd64.tgz.sha256sum
+          sha256sum --check cockroach-v25.4.14.linux-amd64.tgz.sha256sum
+          tar -xzf cockroach-v25.4.14.linux-amd64.tgz
 
       - name: Real CockroachDB schema and API integration
         env:
-          COCKROACH_BINARY: ${{ github.workspace }}/cockroach-v25.4.12.linux-amd64/cockroach
+          COCKROACH_BINARY: ${{ github.workspace }}/cockroach-v25.4.14.linux-amd64/cockroach
         run: make db-test-local

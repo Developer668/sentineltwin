@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 PYTHON ?= python3.12
 .DEFAULT_GOAL := help
 
-.PHONY: help check install api web test lint validate integration provision-db db-bootstrap db-verify db-test-local db-multi-region secret deploy deploy-web smoke smoke-satellite smoke-sentinel load-test
+.PHONY: help check install api web test lint security validate integration provision-db db-bootstrap db-verify db-test-local db-multi-region secret deploy deploy-web smoke smoke-satellite smoke-sentinel load-test
 
 help:
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -28,9 +28,14 @@ test: ## Run backend and frontend test suites.
 
 lint: ## Run syntax/static checks available without cloud credentials.
 	bash -n scripts/*.sh
-	.venv/bin/ruff check backend database/migrate.py scripts/load_test.py
+	.venv/bin/ruff check backend database/migrate.py scripts/load_test.py scripts/validate-database-url.py
 	PYTHONPATH=backend .venv/bin/python -m compileall -q backend
 	pnpm --dir frontend exec tsc --noEmit
+
+security: ## Audit dependencies and scan production Python sources.
+	.venv/bin/pip-audit --local --progress-spinner off
+	.venv/bin/bandit -q -r backend/sentineltwin database/migrate.py scripts/load_test.py scripts/validate-database-url.py
+	pnpm --dir frontend audit --audit-level high
 
 validate: lint ## Validate SAM/CloudFormation (SAM CLI required).
 	sam validate --lint --template-file infra/template.yaml

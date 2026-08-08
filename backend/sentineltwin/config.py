@@ -32,6 +32,39 @@ def validate_database_url(database_url: str) -> None:
         raise ValueError("Non-local DATABASE_URL must set sslmode=verify-full")
 
 
+def validate_cors_origin(origin: str) -> str:
+    """Return one normalized browser origin and reject permissive transports."""
+    candidate = origin.strip().rstrip("/")
+    if not candidate or candidate == "*":
+        raise ValueError("CORS_ORIGIN must be one exact browser origin, not a wildcard")
+    parsed = urlparse(candidate)
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("CORS_ORIGIN must be one exact browser origin without credentials")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("CORS_ORIGIN must not contain a path")
+    hostname = parsed.hostname.lower()
+    try:
+        loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        loopback = hostname == "localhost"
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise ValueError("CORS_ORIGIN must use HTTPS; loopback HTTP is allowed for local development")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("CORS_ORIGIN contains an invalid port") from exc
+    return candidate
+
+
+def validate_operator_group(group: str) -> str:
+    candidate = group.strip()
+    if not candidate:
+        return ""
+    if len(candidate) > 128 or any(character.isspace() for character in candidate):
+        raise ValueError("SENTINEL_REQUIRED_GROUP must be a single Cognito group name")
+    return candidate
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str | None
@@ -51,6 +84,7 @@ class Settings:
     satellite_import_max_bytes: int
     satellite_upload_expires_seconds: int
     allowed_failover_regions: tuple[str, ...]
+    required_operator_group: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -75,7 +109,7 @@ class Settings:
             database_url=database_url,
             database_secret_arn=database_secret_arn,
             database_config_error=database_config_error,
-            cors_origin=os.getenv("CORS_ORIGIN", "*"),
+            cors_origin=validate_cors_origin(os.getenv("CORS_ORIGIN", "http://localhost:5173")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             demo_mode=explicit_demo or zero_setup_demo,
             aws_region=os.getenv("AWS_REGION", "us-west-2"),
@@ -93,4 +127,5 @@ class Settings:
                 for region in os.getenv("ALLOWED_FAILOVER_REGIONS", "us-west-2,us-east-1").split(",")
                 if region.strip()
             ),
+            required_operator_group=validate_operator_group(os.getenv("SENTINEL_REQUIRED_GROUP", "")),
         )

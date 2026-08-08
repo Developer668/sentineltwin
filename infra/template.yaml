@@ -10,7 +10,7 @@ Parameters:
   AllowedOrigin:
     Type: String
     Default: http://localhost:5173
-    AllowedPattern: "\\*|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?"
+    AllowedPattern: "https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\\.0\\.0\\.1)(:[0-9]{1,5})?"
     Description: Exact browser origin. The safe bootstrap default is loopback; redeploy with the emitted CloudFront WebUrl.
   CockroachSecretArn:
     Type: String
@@ -105,6 +105,7 @@ Globals:
         LOG_LEVEL: INFO
         SATELLITE_PREFIX: !Ref SatelliteInputPrefix
         SENTINEL_DEMO_MODE: !Ref DemoMode
+        SENTINEL_REQUIRED_GROUP: !If [AuthEnabled, sentineltwin-operators, ""]
 
 Resources:
   SentinelApi:
@@ -165,7 +166,7 @@ Resources:
       UserPoolName: !Sub "${AWS::StackName}-operators"
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
-      MfaConfiguration: OPTIONAL
+      MfaConfiguration: ON
       EnabledMfas: [SOFTWARE_TOKEN_MFA]
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
@@ -183,6 +184,13 @@ Resources:
           TemporaryPasswordValidityDays: 3
       UserAttributeUpdateSettings:
         AttributesRequireVerificationBeforeUpdate: [email]
+
+  SentinelOperatorGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      Description: Operators authorized to invoke SentinelTwin API routes.
+      GroupName: sentineltwin-operators
+      UserPoolId: !Ref SentinelUserPool
 
   SentinelUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -631,7 +639,7 @@ Resources:
               Override: true
         SecurityHeadersConfig:
           ContentSecurityPolicy:
-            ContentSecurityPolicy: !Sub "default-src 'self'; base-uri 'self'; connect-src 'self' https://${SentinelApi}.execute-api.${AWS::Region}.${AWS::URLSuffix} https://${ArtifactBucketName}.s3.${AWS::URLSuffix} https://${ArtifactBucketName}.s3.${AWS::Region}.${AWS::URLSuffix} https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'"
+            ContentSecurityPolicy: !Sub "default-src 'self'; base-uri 'self'; connect-src 'self' https://${SentinelApi}.execute-api.${AWS::Region}.${AWS::URLSuffix} https://${ArtifactBucketName}.s3.${AWS::URLSuffix} https://${ArtifactBucketName}.s3.${AWS::Region}.${AWS::URLSuffix} https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com; font-src 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; img-src 'self' data: blob:; manifest-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; worker-src 'none'; upgrade-insecure-requests"
             Override: true
           ContentTypeOptions:
             Override: true
@@ -718,6 +726,9 @@ Outputs:
     Value: !Ref SentinelUserPool
   CognitoUserPoolClientId:
     Value: !Ref SentinelUserPoolClient
+  CognitoOperatorGroup:
+    Description: Add authorized users to this group before API access.
+    Value: !Ref SentinelOperatorGroup
   CognitoIssuer:
     Value: !Sub "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SentinelUserPool}"
   CognitoDomain:

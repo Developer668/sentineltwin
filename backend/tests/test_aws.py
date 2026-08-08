@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 from sentineltwin.aws import AWSIntegrations, _jp2_to_jpeg, _valid_image_signature
 from sentineltwin.config import Settings
-from sentineltwin.errors import ValidationError
+from sentineltwin.errors import IntegrationNotConfigured, ValidationError
 
 PNG_HEADER = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 PNG_PAYLOAD = PNG_HEADER + b"\x00" * (2048 - len(PNG_HEADER))
@@ -196,6 +196,32 @@ def test_bedrock_failure_is_explicitly_labelled_deterministic_fallback(monkeypat
     assert result["source"]["provider"] == "amazon-s3"
     assert result["source"]["malware_scan_status"] == "NO_THREATS_FOUND"
     assert "no satellite pixels" in result["summary"].lower()
+
+
+def test_production_bedrock_failure_never_persists_synthetic_assessment(monkeypatch):
+    monkeypatch.setenv("SENTINEL_DEMO_MODE", "false")
+    aws = AWSIntegrations(configured_settings(monkeypatch))
+    aws._s3 = FakeS3()
+    aws._bedrock = FailingBedrock()
+    location = {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "Malibu Canyon",
+        "region": "Los Angeles County",
+        "terrain": "chaparral canyon",
+    }
+    key = f"sentineltwin/quarantine/{location['id']}/tile.png"
+    with pytest.raises(IntegrationNotConfigured, match="no synthetic result"):
+        aws.assess_satellite(location, object_key=key)
+
+
+def test_production_rejects_deterministic_demo_tile(monkeypatch):
+    monkeypatch.setenv("SENTINEL_DEMO_MODE", "false")
+    aws = AWSIntegrations(configured_settings(monkeypatch))
+    with pytest.raises(ValidationError, match="SENTINEL_DEMO_MODE"):
+        aws.assess_satellite(
+            {"id": "00000000-0000-4000-8000-000000000001", "name": "Malibu Canyon"},
+            demo_tile="california-terrain",
+        )
 
 
 def test_declared_image_type_must_match_s3_magic_bytes(monkeypatch):

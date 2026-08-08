@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "backend"))
+
+from sentineltwin.config import validate_database_url
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default=os.getenv("DATABASE_URL"), help="CockroachDB connection URL")
     parser.add_argument("--through", type=int, default=999, help="highest migration number to apply")
     args = parser.parse_args()
-    if not args.url:
-        parser.error("--url or DATABASE_URL is required")
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        parser.error("DATABASE_URL is required")
+    try:
+        validate_database_url(database_url)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         import psycopg
     except ImportError as exc:
@@ -21,7 +31,7 @@ def main() -> None:
 
     directory = Path(__file__).parent / "migrations"
     migrations = [path for path in sorted(directory.glob("*.sql")) if int(path.name.split("_", 1)[0]) <= args.through]
-    with psycopg.connect(args.url, autocommit=True) as connection:
+    with psycopg.connect(database_url, autocommit=True) as connection:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS sentineltwin_schema_migrations (
                    version INT8 PRIMARY KEY,

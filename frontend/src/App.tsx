@@ -182,11 +182,13 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#risk-map">Skip to risk map</a>
       <Sidebar runtime={runtime} onUnavailable={showPreviewLimit} />
       <Header
         runtime={runtime}
         auth={auth}
         currentTime={currentTime}
+        updatedAt={dashboard.updatedAt}
         onAssessSatellite={() => setAssessmentOpen(true)}
         onRunSimulation={() => setSimulationOpen(true)}
         onAuthAction={handleAuth}

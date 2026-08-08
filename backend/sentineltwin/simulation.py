@@ -19,13 +19,28 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+def _number(value: Any, name: str, low: float, high: float) -> float:
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be numeric")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be numeric") from exc
+    if not math.isfinite(number) or number < low or number > high:
+        raise ValidationError(f"{name} must be between {low:g} and {high:g}")
+    return number
+
+
 def _round_map(values: dict[str, Any]) -> dict[str, Any]:
     return {key: round(value, 3) if isinstance(value, float) else value for key, value in values.items()}
 
 
 def _seed_for(location_id: str, hazard: str, requested_seed: int | None) -> int:
     if requested_seed is not None:
-        return int(requested_seed)
+        value = _number(requested_seed, "seed", 0, 4_294_967_295)
+        if not value.is_integer():
+            raise ValidationError("seed must be an integer")
+        return int(value)
     digest = hashlib.sha256(f"sentineltwin:{location_id}:{hazard}".encode()).digest()
     return int.from_bytes(digest[:4], "big")
 
@@ -54,13 +69,13 @@ def simulate_fire(
     models elliptical spread from fuel, dryness, wind and slope, then applies
     response and memory-derived mitigation to structure exposure.
     """
-    vegetation = _clamp(float(parameters.get("vegetation_density", location["vegetation_density"])))
-    moisture = _clamp(float(parameters.get("moisture_percent", location["moisture_percent"])) / 100)
-    wind = max(0.0, min(90.0, float(parameters.get("wind_speed_mph", location["wind_speed_mph"]))))
-    slope = max(0.0, min(60.0, float(parameters.get("slope_degrees", location["slope_degrees"]))))
-    response_delay = max(0.0, min(180.0, float(parameters.get("response_delay_minutes", 28))))
-    suppression = _clamp(float(parameters.get("suppression_strength", 0.58)))
-    duration_minutes = int(max(60, min(720, parameters.get("duration_minutes", 180))))
+    vegetation = _number(parameters.get("vegetation_density", location["vegetation_density"]), "vegetation_density", 0, 1)
+    moisture = _number(parameters.get("moisture_percent", location["moisture_percent"]), "moisture_percent", 0, 100) / 100
+    wind = _number(parameters.get("wind_speed_mph", location["wind_speed_mph"]), "wind_speed_mph", 0, 90)
+    slope = _number(parameters.get("slope_degrees", location["slope_degrees"]), "slope_degrees", 0, 60)
+    response_delay = _number(parameters.get("response_delay_minutes", 28), "response_delay_minutes", 0, 180)
+    suppression = _number(parameters.get("suppression_strength", 0.58), "suppression_strength", 0, 1)
+    duration_minutes = int(_number(parameters.get("duration_minutes", 180), "duration_minutes", 60, 4320))
     steps = max(4, duration_minutes // 15)
 
     dryness = 1 - moisture
@@ -143,12 +158,12 @@ def simulate_earthquake(
     rng: random.Random,
 ) -> tuple[dict, list[dict], list[str]]:
     """Estimate shaking and cascading impact with a simple fragility curve."""
-    magnitude = max(4.0, min(8.5, float(parameters.get("magnitude", 6.7))))
-    distance_km = max(1.0, min(250.0, float(parameters.get("fault_distance_km", 14))))
-    soil = max(0.7, min(2.2, float(parameters.get("soil_amplification", location["soil_amplification"]))))
-    retrofit = _clamp(float(parameters.get("retrofit_ratio", 0.43)))
-    response_readiness = _clamp(float(parameters.get("response_readiness", 0.68)) + learned_modifier)
-    duration_minutes = int(max(60, min(1440, parameters.get("duration_minutes", 360))))
+    magnitude = _number(parameters.get("magnitude", 6.7), "magnitude", 4, 8.5)
+    distance_km = _number(parameters.get("fault_distance_km", 14), "fault_distance_km", 1, 250)
+    soil = _number(parameters.get("soil_amplification", location["soil_amplification"]), "soil_amplification", 0.7, 2.2)
+    retrofit = _number(parameters.get("retrofit_ratio", 0.43), "retrofit_ratio", 0, 1)
+    response_readiness = _clamp(_number(parameters.get("response_readiness", 0.68), "response_readiness", 0, 1) + learned_modifier)
+    duration_minutes = int(_number(parameters.get("duration_minutes", 360), "duration_minutes", 60, 4320))
 
     attenuation = math.exp(-distance_km / 62)
     pga = min(1.8, 0.055 * 10 ** (0.42 * (magnitude - 5)) * attenuation * soil)
@@ -219,8 +234,14 @@ def run_simulation(
         raise ValidationError("hazard must be fire, earthquake, or multi_hazard")
     parameters = parameters or {}
     memories = memories or []
+    if not isinstance(parameters, dict):
+        raise ValidationError("parameters must be a JSON object")
+    for nested in ("fire", "earthquake"):
+        if nested in parameters and not isinstance(parameters[nested], dict):
+            raise ValidationError(f"parameters.{nested} must be a JSON object")
     seed = _seed_for(str(location["id"]), hazard, requested_seed)
-    rng = random.Random(seed)
+    # Reproducible scenario modeling intentionally uses a non-cryptographic generator.
+    rng = random.Random(seed)  # nosec B311
     modifier, learned_tactics = memory_learning_modifier(memories)
     now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 

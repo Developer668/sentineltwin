@@ -19,7 +19,7 @@ Evidence after deployment:
 
 ```bash
 make db-verify
-cockroach sql --url "$DATABASE_URL" --execute \
+COCKROACH_URL="$DATABASE_URL" cockroach sql --execute \
   "EXPLAIN SELECT id,title FROM agent_memories WHERE hazard='fire' ORDER BY embedding <-> '[REDACTED_32D_VECTOR]'::VECTOR LIMIT 4;"
 ```
 

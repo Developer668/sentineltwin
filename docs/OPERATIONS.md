@@ -50,8 +50,8 @@
 ### Authentication failures
 
 1. Confirm stack `AuthMode` is `cognito`, Cognito issuer/client/scopes match the frontend build, and CORS is the exact CloudFront origin.
-2. Distinguish 401 (missing/invalid/expired JWT) from 403 (valid token missing `openid` scope). Never log the token.
-3. Confirm the frontend callback URI exactly matches the User Pool Client and the browser clock is sane.
+2. Distinguish 401 (missing/invalid/expired JWT) from 403 (valid token missing `openid` scope or `sentineltwin-operators` membership). Never log the token.
+3. Confirm the frontend callback URI exactly matches the User Pool Client, the user completed MFA enrollment, group membership is current, and the browser clock is sane.
 4. Rebuild with `make deploy-web` after stack/client changes. Do not work around auth by switching a production endpoint to `public`.
 
 ### CockroachDB connectivity
