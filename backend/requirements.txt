@@ -1,4 +1,4 @@
 # AWS Lambda Python 3.12 runtime dependencies
-psycopg[binary]>=3.2.1,<4
+psycopg[binary]>=3.3.4,<4
 boto3>=1.35,<2
 Pillow>=11.3,<13
