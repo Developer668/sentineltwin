@@ -1,0 +1,156 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install backend
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r backend/requirements-dev.txt
+
+      - name: Install frontend
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Reproducible quality checks
+        run: make lint
+
+      - name: Public deployment is synthetic-only
+        run: |
+          set +e
+          guard_output=$(AUTH_MODE=public SENTINEL_DEMO_MODE=false DATABASE_SECRET_ARN= ./scripts/deploy-aws.sh 2>&1)
+          guard_exit_code=$?
+          set -e
+          test "$guard_exit_code" -eq 2
+          grep -Fq 'requires SENTINEL_DEMO_MODE=true' <<<"$guard_output"
+
+          set +e
+          guard_output=$(AUTH_MODE=public SENTINEL_DEMO_MODE=true DATABASE_SECRET_ARN=arn:aws:secretsmanager:us-west-2:123456789012:secret:test ./scripts/deploy-aws.sh 2>&1)
+          guard_exit_code=$?
+          set -e
+          test "$guard_exit_code" -eq 2
+          grep -Fq 'requires DATABASE_SECRET_ARN to be empty' <<<"$guard_output"
+
+      - name: Backend tests
+        run: PYTHONPATH=backend .venv/bin/python -m pytest -q backend/tests
+
+      - name: Read-only load harness smoke
+        run: |
+          SENTINEL_DEMO_MODE=true PYTHONPATH=backend .venv/bin/python -m sentineltwin.local_server > /tmp/sentineltwin-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8787/api/health > /dev/null; then
+              break
+            fi
+            if [[ "$attempt" -eq 20 ]]; then
+              cat /tmp/sentineltwin-api.log
+              exit 1
+            fi
+            sleep 0.25
+          done
+          .venv/bin/python scripts/load_test.py \
+            --base-url http://127.0.0.1:8787 \
+            --duration 1 \
+            --concurrency 4 \
+            --max-error-rate 0 \
+            --max-p95-ms 500
+
+      - name: Frontend tests and build
+        env:
+          VITE_API_URL: http://127.0.0.1:8787
+        run: |
+          pnpm --dir frontend test
+          pnpm --dir frontend build
+
+      - name: Secret-pattern guard
+        run: |
+          db_scheme=postgresql
+          db_credential_pattern="${db_scheme}://[^[:space:]]+:[^[:space:]@]+@"
+          if git grep -lE 'AKIA[0-9A-Z]{16}' -- ':!*.example' ':!docs/**' || \
+             git grep -lE "$db_credential_pattern" -- ':!*.example' ':!docs/**' ':!backend/tests/test_config.py'; then
+            echo 'Potential committed credential detected in the file(s) above; values are intentionally not printed.' >&2
+            exit 1
+          fi
+
+  sam-package:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/setup-sam@v2
+
+      - name: Validate SAM template
+        run: sam validate --lint --template-file infra/template.yaml
+
+      - name: Build Linux arm64 Lambda artifacts in the SAM container
+        run: |
+          docker info
+          sam build --use-container --template-file infra/template.yaml
+
+  cockroach-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r backend/requirements-dev.txt
+
+      - name: Download verified CockroachDB 25.4 binary
+        run: |
+          curl --fail --silent --show-error --location --remote-name \
+            https://binaries.cockroachdb.com/cockroach-v25.4.12.linux-amd64.tgz
+          curl --fail --silent --show-error --location --remote-name \
+            https://binaries.cockroachdb.com/cockroach-v25.4.12.linux-amd64.tgz.sha256sum
+          sha256sum --check cockroach-v25.4.12.linux-amd64.tgz.sha256sum
+          tar -xzf cockroach-v25.4.12.linux-amd64.tgz
+
+      - name: Real CockroachDB schema and API integration
+        env:
+          COCKROACH_BINARY: ${{ github.workspace }}/cockroach-v25.4.12.linux-amd64/cockroach
+        run: make db-test-local

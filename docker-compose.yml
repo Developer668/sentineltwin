@@ -1,0 +1,52 @@
+services:
+  api:
+    image: python:3.12-slim
+    working_dir: /workspace
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CORS_ORIGIN: http://localhost:5173
+      PYTHONPATH: /workspace/backend:/tmp/python-deps
+      SENTINEL_HOST: 0.0.0.0
+    command:
+      - /bin/sh
+      - -c
+      - pip install --disable-pip-version-check --no-cache-dir --target /tmp/python-deps -r backend/requirements.txt && python -m sentineltwin.local_server
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./:/workspace:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: node:22-alpine
+    working_dir: /workspace/frontend
+    init: true
+    depends_on:
+      - api
+    environment:
+      VITE_API_URL: http://localhost:8787
+    command:
+      - /bin/sh
+      - -c
+      - corepack enable && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/workspace/frontend
+      - frontend_node_modules:/workspace/frontend/node_modules
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  frontend_node_modules:
+
+# Deliberately no local PostgreSQL/SQLite/Redis service: CockroachDB Cloud is
+# SentinelTwin's sole persistent memory. With no DATABASE_URL, the API labels
+# itself deterministic demo mode and retains state only for the process lifetime.

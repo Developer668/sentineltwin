@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "sentineltwin"
+resolve_s3 = true
+region = "us-west-2"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+fail_on_empty_changeset = false
+
+# Keep secret/model/origin values out of this committed file. scripts/deploy-aws.sh
+# supplies parameter overrides from the environment.

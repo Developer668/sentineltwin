@@ -1,0 +1,741 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: SentinelTwin serverless agent API, private evidence storage, and private static web delivery.
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: "[a-zA-Z0-9_-]+"
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:5173
+    AllowedPattern: "\\*|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?"
+    Description: Exact browser origin. The safe bootstrap default is loopback; redeploy with the emitted CloudFront WebUrl.
+  CockroachSecretArn:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional Secrets Manager ARN whose SecretString JSON contains DATABASE_URL.
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-lite-v1:0
+  AuthMode:
+    Type: String
+    Default: cognito
+    AllowedValues: [cognito, public]
+    Description: Cognito protects every API route except health by default; public is an explicit demo-only opt-out.
+  CognitoDomainPrefix:
+    Type: String
+    Default: sentineltwin-change-me
+    AllowedPattern: "[a-z0-9-]{3,63}"
+    Description: Globally unique Hosted UI prefix. scripts/deploy-aws.sh derives an account/region-specific value unless overridden.
+  SatelliteInputPrefix:
+    Type: String
+    Default: sentineltwin/quarantine/
+    AllowedPattern: "[A-Za-z0-9!_.*'()/\u0026$@=;:+,? -]+/"
+    Description: GuardDuty Malware Protection scans only this quarantine prefix before EventBridge ingestion.
+  ArtifactBucketName:
+    Type: String
+    Default: sentineltwin-change-me-artifacts
+    AllowedPattern: "[a-z0-9][a-z0-9-]{1,61}[a-z0-9]"
+    Description: Globally unique bucket name. scripts/deploy-aws.sh derives an account/region-specific value unless overridden.
+  DemoMode:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  ApiReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 2
+    MaxValue: 500
+    Description: Reserved API Lambda concurrency; tune only after running the authenticated load test.
+  IngestionReservedConcurrency:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 100
+    Description: GuardDuty-cleared imagery concurrency; caps Bedrock, S3, and CockroachDB pressure.
+  ApiThrottleBurstLimit:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    MaxValue: 5000
+  ApiThrottleRateLimit:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 5000
+  DatabasePoolMaxSize:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 20
+    Description: Per-Lambda-process CockroachDB pool cap; total possible connections scale with warm concurrency.
+
+Rules:
+  PublicModeIsSyntheticOnly:
+    RuleCondition: !Equals [!Ref AuthMode, public]
+    Assertions:
+      - Assert: !Equals [!Ref DemoMode, "true"]
+        AssertDescription: AuthMode=public requires DemoMode=true.
+      - Assert: !Equals [!Ref CockroachSecretArn, ""]
+        AssertDescription: AuthMode=public requires an empty CockroachSecretArn so it cannot reach persistent data.
+
+Conditions:
+  HasCockroachSecret: !Not [!Equals [!Ref CockroachSecretArn, ""]]
+  AuthEnabled: !Equals [!Ref AuthMode, cognito]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    MemorySize: 1024
+    Timeout: 28
+    Tracing: Active
+    Environment:
+      Variables:
+        AWS_REGION_NAME: !Ref AWS::Region
+        ARTIFACT_BUCKET: !If [AuthEnabled, !Ref ArtifactBucketName, ""]
+        ARTIFACT_PREFIX: sentineltwin/simulations
+        BEDROCK_MODEL_ID: !If [AuthEnabled, !Ref BedrockModelId, ""]
+        CORS_ORIGIN: !Ref AllowedOrigin
+        DATABASE_SECRET_ARN: !If [HasCockroachSecret, !Ref CockroachSecretArn, ""]
+        DB_POOL_MAX_SIZE: !Ref DatabasePoolMaxSize
+        LOG_LEVEL: INFO
+        SATELLITE_PREFIX: !Ref SatelliteInputPrefix
+        SENTINEL_DEMO_MODE: !Ref DemoMode
+
+Resources:
+  SentinelApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowHeaders: [authorization, content-type, x-request-id]
+        AllowMethods: [GET, POST, OPTIONS]
+        MaxAge: 600
+
+  SentinelApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: ApiAccessLogPolicy
+    Properties:
+      ApiId: !Ref SentinelApi
+      StageName: !Ref StageName
+      AutoDeploy: true
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+        ThrottlingBurstLimit: !Ref ApiThrottleBurstLimit
+        ThrottlingRateLimit: !Ref ApiThrottleRateLimit
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogs.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}'
+
+  SentinelApiAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Condition: AuthEnabled
+    Properties:
+      ApiId: !Ref SentinelApi
+      AuthorizerType: JWT
+      IdentitySource: ["$request.header.Authorization"]
+      JwtConfiguration:
+        Audience: [!Ref SentinelUserPoolClient]
+        Issuer: !Sub "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SentinelUserPool}"
+      Name: SentinelCognitoJwt
+
+  ApiAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+
+  ApiAccessLogPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-api-access-logs"
+      PolicyDocument: !Sub |
+        {"Version":"2012-10-17","Statement":[{"Sid":"ApiGatewayWrite","Effect":"Allow","Principal":{"Service":"apigateway.amazonaws.com"},"Action":["logs:CreateLogStream","logs:PutLogEvents"],"Resource":"${ApiAccessLogs.Arn}:*"}]}
+
+  SentinelUserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-operators"
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 3
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate: [email]
+
+  SentinelUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AWS::StackName}-spa"
+      UserPoolId: !Ref SentinelUserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - !Sub "https://${WebDistribution.DomainName}/auth/callback"
+      LogoutURLs:
+        - !Sub "https://${WebDistribution.DomainName}/"
+      # Omitting this property enables SRP and custom InitiateAuth flows by
+      # default. Keep only refresh-token auth; interactive sign-in is OAuth code.
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 7
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+  SentinelUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref SentinelUserPool
+
+  SentinelFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: sentineltwin.app.lambda_handler
+      Description: Runs SentinelTwin risk, retrieval, simulation, and planning agents.
+      ReservedConcurrentExecutions: !Ref ApiReservedConcurrency
+      Policies:
+        - !If
+          - AuthEnabled
+          - Version: "2012-10-17"
+            Statement:
+              - Sid: ArtifactObjectReadWrite
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetObjectTagging
+                  - s3:GetObjectVersionTagging
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/sentineltwin/simulations/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${SatelliteInputPrefix}*"
+              - Sid: ArtifactBucketList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - sentineltwin/simulations/*
+                      - !Sub "${SatelliteInputPrefix}*"
+              - Sid: InvokeConfiguredFoundationModel
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+              - !If
+                - HasCockroachSecret
+                - Sid: ReadCockroachCredential
+                  Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref CockroachSecretArn
+                - !Ref AWS::NoValue
+          - !Ref AWS::NoValue
+
+  SentinelApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SentinelApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SentinelFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 28000
+
+  SentinelApiRootRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SentinelApi
+      RouteKey: "ANY /api"
+      AuthorizationType: !If [AuthEnabled, JWT, NONE]
+      AuthorizationScopes: !If [AuthEnabled, [openid], !Ref "AWS::NoValue"]
+      AuthorizerId: !If [AuthEnabled, !Ref SentinelApiAuthorizer, !Ref "AWS::NoValue"]
+      Target: !Sub "integrations/${SentinelApiIntegration}"
+
+  SentinelApiProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SentinelApi
+      RouteKey: "ANY /api/{proxy+}"
+      AuthorizationType: !If [AuthEnabled, JWT, NONE]
+      AuthorizationScopes: !If [AuthEnabled, [openid], !Ref "AWS::NoValue"]
+      AuthorizerId: !If [AuthEnabled, !Ref SentinelApiAuthorizer, !Ref "AWS::NoValue"]
+      Target: !Sub "integrations/${SentinelApiIntegration}"
+
+  SentinelApiHealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SentinelApi
+      RouteKey: "GET /api/health"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${SentinelApiIntegration}"
+
+  SentinelApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SentinelFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${SentinelApi}/*/*"
+
+  SatelliteFailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-satellite-failures"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  SatelliteIngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: sentineltwin.app.satellite_event_handler
+      Description: Assesses exact quarantined object versions only after a verified GuardDuty clean verdict.
+      MemorySize: 1536
+      Timeout: 60
+      ReservedConcurrentExecutions: !Ref IngestionReservedConcurrency
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - !If
+              - AuthEnabled
+              - Sid: ReadCleanQuarantinedSatelliteObject
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetObjectTagging
+                  - s3:GetObjectVersionTagging
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${SatelliteInputPrefix}*"
+              - !Ref AWS::NoValue
+            - !If
+              - AuthEnabled
+              - Sid: InvokeConfiguredFoundationModel
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+              - !Ref AWS::NoValue
+            - Sid: SendFailedEventToQueue
+              Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt SatelliteFailureQueue.Arn
+            - !If
+              - HasCockroachSecret
+              - Sid: ReadCockroachCredential
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref CockroachSecretArn
+              - !Ref AWS::NoValue
+
+  GuardDutyMalwareProtectionRole:
+    Type: AWS::IAM::Role
+    Condition: AuthEnabled
+    Properties:
+      Description: Least-privilege service role for GuardDuty Malware Protection on the quarantine prefix.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: malware-protection-plan.guardduty.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GuardDutyQuarantineScan
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AllowManagedRuleToSendS3EventsToGuardDuty
+                Effect: Allow
+                Action: [events:PutRule, events:DeleteRule, events:PutTargets, events:RemoveTargets]
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*"
+                Condition:
+                  StringLike:
+                    events:ManagedBy: malware-protection-plan.guardduty.amazonaws.com
+              - Sid: AllowGuardDutyToMonitorManagedRule
+                Effect: Allow
+                Action: [events:DescribeRule, events:ListTargetsByRule]
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*"
+              - Sid: AllowPostScanTag
+                Effect: Allow
+                Action:
+                  - s3:PutObjectTagging
+                  - s3:GetObjectTagging
+                  - s3:PutObjectVersionTagging
+                  - s3:GetObjectVersionTagging
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${SatelliteInputPrefix}*"
+              - Sid: AllowEnableS3EventBridgeEvents
+                Effect: Allow
+                Action: [s3:PutBucketNotification, s3:GetBucketNotification]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}"
+              - Sid: AllowPutValidationObject
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/malware-protection-resource-validation-object"
+              - Sid: AllowCheckBucketOwnershipAndPrefix
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - !Sub "${SatelliteInputPrefix}*"
+                      - malware-protection-resource-validation-object
+              - Sid: AllowMalwareScan
+                Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${SatelliteInputPrefix}*"
+
+  SatelliteMalwareProtectionPlan:
+    Type: AWS::GuardDuty::MalwareProtectionPlan
+    Condition: AuthEnabled
+    Properties:
+      Actions:
+        Tagging:
+          Status: ENABLED
+      ProtectedResource:
+        S3Bucket:
+          BucketName: !Ref ArtifactBucket
+          ObjectPrefixes: [!Ref SatelliteInputPrefix]
+      Role: !GetAtt GuardDutyMalwareProtectionRole.Arn
+      Tags:
+        - Key: Application
+          Value: SentinelTwin
+
+  SatelliteMalwareScanRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Routes GuardDuty malware scan verdicts for quarantined imagery to the assessment Lambda.
+      EventPattern:
+        source: [aws.guardduty]
+        detail-type: [GuardDuty Malware Protection Object Scan Result]
+        detail:
+          resourceType: [S3_OBJECT]
+          s3ObjectDetails:
+            bucketName: [!Ref ArtifactBucketName]
+            objectKey:
+              - prefix: !Ref SatelliteInputPrefix
+      State: !If [AuthEnabled, ENABLED, DISABLED]
+      Targets:
+        - Arn: !GetAtt SatelliteIngestionFunction.Arn
+          Id: SatelliteAssessmentLambda
+          DeadLetterConfig:
+            Arn: !GetAtt SatelliteFailureQueue.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 21600
+            MaximumRetryAttempts: 2
+
+  SatelliteEventBridgeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SatelliteIngestionFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SatelliteMalwareScanRule.Arn
+
+  SatelliteFailureQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref SatelliteFailureQueue]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EventBridgeDeadLetterDelivery
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt SatelliteFailureQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt SatelliteMalwareScanRule.Arn
+
+  SatelliteIngestionEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref SatelliteIngestionFunction
+      Qualifier: $LATEST
+      MaximumEventAgeInSeconds: 21600
+      MaximumRetryAttempts: 2
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt SatelliteFailureQueue.Arn
+
+  SatelliteIngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SatelliteIngestionFunction}"
+      RetentionInDays: 30
+
+  SatelliteIngestionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Satellite assessment ingestion returned errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SatelliteIngestionFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  SentinelFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SentinelFunction}"
+      RetentionInDays: 30
+
+  FunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SentinelTwin Lambda returned errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SentinelFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  FunctionThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SentinelTwin Lambda is being throttled.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SentinelFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref ArtifactBucketName
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!Ref AllowedOrigin]
+            AllowedHeaders: ["*"]
+            AllowedMethods: [POST]
+            ExposedHeaders: [ETag]
+            MaxAge: 600
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: ArchiveOldVersions
+            Status: Enabled
+            NoncurrentVersionTransitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-web-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebSecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-security-headers"
+        Comment: Browser security headers for the SentinelTwin SPA.
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: camera=(), microphone=(), geolocation=()
+              Override: true
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: !Sub "default-src 'self'; base-uri 'self'; connect-src 'self' https://${SentinelApi}.execute-api.${AWS::Region}.${AWS::URLSuffix} https://${ArtifactBucketName}.s3.${AWS::URLSuffix} https://${ArtifactBucketName}.s3.${AWS::Region}.${AWS::URLSuffix} https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'"
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Override: true
+            Preload: true
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: SentinelTwin private S3 web origin
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: WebOrigin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !Ref WebOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: WebOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref WebSecurityHeadersPolicy
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+
+Outputs:
+  AuthMode:
+    Description: cognito enables live protected integrations; public is synthetic-only with live integration access removed.
+    Value: !Ref AuthMode
+  ApiUrl:
+    Description: HTTPS API base; append /api.
+    Value: !Sub "https://${SentinelApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}"
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  SatelliteInputPrefix:
+    Value: !Ref SatelliteInputPrefix
+  SatelliteMalwareProtectionPlanArn:
+    Condition: AuthEnabled
+    Description: GuardDuty Malware Protection plan that scans the quarantine prefix.
+    Value: !GetAtt SatelliteMalwareProtectionPlan.Arn
+  CognitoUserPoolId:
+    Value: !Ref SentinelUserPool
+  CognitoUserPoolClientId:
+    Value: !Ref SentinelUserPoolClient
+  CognitoIssuer:
+    Value: !Sub "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SentinelUserPool}"
+  CognitoDomain:
+    Description: Set frontend VITE_COGNITO_DOMAIN to this HTTPS origin.
+    Value: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
+  CognitoCallbackUrl:
+    Description: Set frontend VITE_COGNITO_REDIRECT_URI to this URL.
+    Value: !Sub "https://${WebDistribution.DomainName}/auth/callback"
+  CognitoScopes:
+    Description: Set frontend VITE_COGNITO_SCOPES to this space-delimited value.
+    Value: openid email profile
+  SatelliteFailureQueueUrl:
+    Description: Encrypted dead-letter queue for exhausted asynchronous ingestion retries.
+    Value: !Ref SatelliteFailureQueue
+  WebBucketName:
+    Value: !Ref WebBucket
+  WebDistributionId:
+    Value: !Ref WebDistribution
+  WebUrl:
+    Description: Functional demo URL after scripts/deploy-frontend.sh uploads frontend/dist.
+    Value: !Sub "https://${WebDistribution.DomainName}"
