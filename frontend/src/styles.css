@@ -768,6 +768,12 @@ select { width: 100%; height: 37px; padding: 0 9px; border: 1px solid var(--line
 .upload-dropzone:hover { background: rgba(118,214,220,.035); }
 .upload-dropzone strong { margin-top: 9px; color: #dce4e1; font: 500 13px "Barlow Condensed", sans-serif; }
 .upload-dropzone small { margin-top: 4px; color: #778582; font: 8px "IBM Plex Mono", monospace; }
+.selected-file-card { position: relative; z-index: 2; height: 100%; display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 13px; padding: 22px; color: var(--cyan); background: radial-gradient(circle at 12% 50%, rgba(118,214,220,.09), transparent 38%); }
+.selected-file-icon { width: 48px; height: 48px; display: grid; place-items: center; border: 1px solid rgba(118,214,220,.42); background: rgba(118,214,220,.07); }
+.selected-file-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; }
+.selected-file-card small { color: #7f918d; font: 8px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .06em; }
+.selected-file-card strong { overflow: hidden; margin-top: 5px; color: #e3eae7; font: 600 15px "Barlow Condensed", sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.selected-file-card em { margin-top: 4px; color: #82918e; font: normal 8px "IBM Plex Mono", monospace; }
 .open-data-source { position: relative; z-index: 2; height: 100%; display: grid; grid-template-columns: 36px 1fr; align-content: center; column-gap: 10px; padding: 16px 20px; }
 .open-data-icon { width: 36px; height: 36px; display: grid; place-items: center; grid-row: span 2; color: var(--cyan); border: 1px solid rgba(118,214,220,.34); background: rgba(118,214,220,.06); }
 .open-data-source > div { display: flex; flex-direction: column; }

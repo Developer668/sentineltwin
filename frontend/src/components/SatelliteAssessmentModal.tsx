@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Check, CloudUpload, Database, FileImage, Image as ImageIcon, RefreshCw, Satellite, ShieldCheck, X } from 'lucide-react'
 import { useDialogFocus } from '../lib/useDialogFocus'
 import { describeApiError } from '../lib/api'
@@ -41,10 +41,7 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
   const [stage, setStage] = useState<AssessmentStage>('select')
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<SatelliteAssessment | null>(null)
-  const previewUrl = useMemo(() => file ? URL.createObjectURL(file) : null, [file])
   useDialogFocus(open, dialogRef)
-
-  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl) }, [previewUrl])
 
   useEffect(() => {
     if (!open) return
@@ -225,11 +222,16 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
                   />
                   <small id="sentinel-source-note" className="source-key-note">Verified Santa Rosa tile sample · replace the key when targeting another zone</small>
                 </div>
-              ) : previewUrl ? (
-                <>
-                  <img src={previewUrl} alt={`Selected imagery file ${file?.name ?? ''}`} />
-                  <span className="preview-label"><FileImage size={13} /> {file?.name} · {file ? (file.size / 1024 / 1024).toFixed(2) : '0'} MB</span>
-                </>
+              ) : file ? (
+                <div className="selected-file-card" role="status">
+                  <span className="selected-file-icon"><FileImage size={28} /></span>
+                  <span>
+                    <small>Selected for private quarantine</small>
+                    <strong>{file.name}</strong>
+                    <em>{(file.size / 1024 / 1024).toFixed(2)} MB · {file.type.replace('image/', '').toUpperCase()}</em>
+                  </span>
+                  <ShieldCheck size={17} aria-hidden="true" />
+                </div>
               ) : (
                 <label className="upload-dropzone" htmlFor={inputId} role="button" tabIndex={0} onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {

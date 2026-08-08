@@ -78,4 +78,27 @@ describe('SatelliteAssessmentModal source truth', () => {
     expect(demo?.getAttribute('aria-checked')).toBe('true')
     expect(container.textContent).toContain('Synthetic California terrain · demo input')
   })
+
+  it('renders an untrusted upload name as text without creating a dynamic image sink', async () => {
+    await act(async () => root.render(
+      <SatelliteAssessmentModal
+        open
+        location={location}
+        runtime={{ ...productionRuntime, source: 'api-demo', persistence: 'ephemeral', label: 'Connected demo' }}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    ))
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-imagery-mode="upload"]')?.click())
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')
+    const file = new File(['not-decoded-by-the-browser'], '<img src=x onerror=alert(1)>.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => input?.dispatchEvent(new Event('change', { bubbles: true })))
+
+    expect(container.querySelector('.selected-file-card strong')?.textContent).toBe(file.name)
+    expect(container.querySelector('.imagery-preview img')).toBeNull()
+    expect(container.querySelector('.selected-file-card img')).toBeNull()
+  })
 })
