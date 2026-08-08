@@ -40,6 +40,7 @@ jobs:
       - name: Install backend
         run: |
           python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
           .venv/bin/pip install -r backend/requirements-dev.txt
 
       - name: Install frontend
@@ -142,6 +143,7 @@ jobs:
       - name: Install backend
         run: |
           python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
           .venv/bin/pip install -r backend/requirements-dev.txt
 
       - name: Download verified CockroachDB 25.4 binary
