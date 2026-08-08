@@ -27,7 +27,7 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.6.1
 
