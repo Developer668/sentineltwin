@@ -5,3 +5,4 @@
 \i database/migrations/002_seed.sql
 \i database/migrations/003_satellite_assessments.sql
 \i database/migrations/004_core_agents.sql
+\i database/migrations/005_agricultural_resilience.sql

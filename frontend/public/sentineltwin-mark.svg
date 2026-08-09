@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SentinelTwin">
+  <rect width="64" height="64" rx="12" fill="#071017"/>
+  <path d="M32 8 52 18v14c0 12-7.9 20.4-20 24C19.9 52.4 12 44 12 32V18L32 8Z" fill="none" stroke="#ff6b1a" stroke-width="4"/>
+  <path d="m21 34 7 7 16-18" fill="none" stroke="#8fe36b" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
+</svg>

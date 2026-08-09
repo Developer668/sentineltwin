@@ -11,6 +11,7 @@ import { SystemWorkspace } from './components/SystemWorkspace'
 import { Toast } from './components/Toast'
 import { demoDashboard, offlineRuntime } from './data/demoData'
 import { describeApiError, sentinelApi } from './lib/api'
+import { isAgriculturalEvidenceReady } from './lib/agriculturalEvidence'
 import { cognitoAuth } from './lib/auth'
 import type { DashboardData, HazardLayer, OutageResult, OutageState, SatelliteAssessment, SatelliteAssessmentRequest, SatelliteAssessmentStage, SimulationRequest, SimulationResult, WorkspaceId } from './types'
 
@@ -74,6 +75,12 @@ export default function App() {
   const selectedLocation = useMemo(
     () => dashboard.locations.find((location) => location.id === selectedLocationId) ?? dashboard.locations[0] ?? demoDashboard.locations[0],
     [dashboard.locations, selectedLocationId],
+  )
+  const selectedAssessment = useMemo(
+    () => dashboard.assessments.find((assessment) => (
+      isAgriculturalEvidenceReady(assessment, selectedLocation.id, runtime)
+    )),
+    [dashboard.assessments, selectedLocation.id, runtime],
   )
 
   const runSimulation = useCallback(async (request: SimulationRequest) => sentinelApi.runSimulation(request), [])
@@ -152,6 +159,7 @@ export default function App() {
     const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
     setDashboard((current) => ({
       ...current,
+      assessments: [assessment, ...current.assessments.filter((item) => item.id !== assessment.id)].slice(0, 10),
       locations: current.locations.map((location) => location.id === assessment.locationId
         ? { ...location, fireScore: assessment.fireRisk, seismicScore: assessment.earthquakeRisk, risk, hazards }
         : location),
@@ -266,7 +274,12 @@ export default function App() {
         location={selectedLocation}
         runtime={runtime}
         initialLayer={layer}
+        assessment={selectedAssessment}
         onClose={() => setSimulationOpen(false)}
+        onAssessSatellite={() => {
+          setSimulationOpen(false)
+          setAssessmentOpen(true)
+        }}
         onSubmit={runSimulation}
         onComplete={completeSimulation}
       />

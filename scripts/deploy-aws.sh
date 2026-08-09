@@ -5,7 +5,6 @@ stack_name=${STACK_NAME:-sentineltwin}
 region=${AWS_REGION:-us-west-2}
 allowed_origin=${CORS_ORIGIN:-http://localhost:5173}
 model_id=${BEDROCK_MODEL_ID:-amazon.nova-lite-v1:0}
-lambda_architecture=${LAMBDA_ARCHITECTURE:-x86_64}
 legacy_sam_build_mode=${SAM_BUILD_MODE:-}
 sam_build_mode=${SENTINEL_SAM_BUILD_MODE:-${legacy_sam_build_mode:-container}}
 unset SAM_BUILD_MODE
@@ -18,6 +17,7 @@ satellite_prefix=${SATELLITE_INPUT_PREFIX:-sentineltwin/quarantine/}
 api_reserved_concurrency=${API_RESERVED_CONCURRENCY:-0}
 ingestion_reserved_concurrency=${INGESTION_RESERVED_CONCURRENCY:-0}
 api_detailed_metrics_enabled=${API_DETAILED_METRICS_ENABLED:-false}
+guardduty_malware_protection_enabled=${GUARDDUTY_MALWARE_PROTECTION_ENABLED:-true}
 api_throttle_burst=${API_THROTTLE_BURST_LIMIT:-40}
 api_throttle_rate=${API_THROTTLE_RATE_LIMIT:-20}
 database_pool_max_size=${DATABASE_POOL_MAX_SIZE:-4}
@@ -36,9 +36,9 @@ case "$api_detailed_metrics_enabled" in
   true|false) ;;
   *) echo "API_DETAILED_METRICS_ENABLED must be 'true' or 'false'." >&2; exit 2 ;;
 esac
-case "$lambda_architecture" in
-  x86_64|arm64) ;;
-  *) echo "LAMBDA_ARCHITECTURE must be 'x86_64' or 'arm64'." >&2; exit 2 ;;
+case "$guardduty_malware_protection_enabled" in
+  true|false) ;;
+  *) echo "GUARDDUTY_MALWARE_PROTECTION_ENABLED must be 'true' or 'false'." >&2; exit 2 ;;
 esac
 case "$sam_build_mode" in
   container|native-linux) ;;
@@ -93,8 +93,8 @@ if [[ "$sam_build_mode" == "container" ]]; then
   command -v docker >/dev/null 2>&1 || { echo "Docker is required for containerized Lambda dependency packaging." >&2; exit 1; }
   docker info >/dev/null 2>&1 || { echo "Start the Docker daemon before deploying." >&2; exit 1; }
 else
-  if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" || "$lambda_architecture" != "x86_64" ]]; then
-    echo "SENTINEL_SAM_BUILD_MODE=native-linux requires a Linux x86_64 host and LAMBDA_ARCHITECTURE=x86_64." >&2
+  if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+    echo "SENTINEL_SAM_BUILD_MODE=native-linux requires a Linux x86_64 host." >&2
     exit 2
   fi
   command -v python3.12 >/dev/null 2>&1 || { echo "Python 3.12 is required for a native Linux Lambda build." >&2; exit 1; }
@@ -177,7 +177,6 @@ sam deploy \
     "AllowedOrigin=$allowed_origin" \
     "CockroachSecretArn=$secret_arn" \
     "BedrockModelId=$model_id" \
-    "LambdaArchitecture=$lambda_architecture" \
     "AuthMode=$auth_mode" \
     "CognitoDomainPrefix=$domain_prefix" \
     "ArtifactBucketName=$artifact_bucket_name" \
@@ -185,6 +184,7 @@ sam deploy \
     "ApiReservedConcurrency=$api_reserved_concurrency" \
     "IngestionReservedConcurrency=$ingestion_reserved_concurrency" \
     "ApiDetailedMetricsEnabled=$api_detailed_metrics_enabled" \
+    "GuardDutyMalwareProtectionEnabled=$guardduty_malware_protection_enabled" \
     "ApiThrottleBurstLimit=$api_throttle_burst" \
     "ApiThrottleRateLimit=$api_throttle_rate" \
     "DatabasePoolMaxSize=$database_pool_max_size" \

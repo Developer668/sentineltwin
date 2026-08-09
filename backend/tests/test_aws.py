@@ -38,7 +38,31 @@ class FakeS3:
 
     def put_object(self, **kwargs):
         self.puts.append(kwargs)
-        return {"ETag": '"destination-etag"'}
+        return {"ETag": '"destination-etag"', "VersionId": "destination-version-1"}
+
+
+class TrustedImportS3(FakeS3):
+    def __init__(self, payload: bytes):
+        super().__init__()
+        self.payload = payload
+
+    def head_object(self, **kwargs):
+        assert kwargs.get("VersionId") == "destination-version-1"
+        uploaded = self.puts[0]
+        return {
+            "ContentLength": len(self.payload),
+            "ContentType": uploaded["ContentType"],
+            "Metadata": uploaded["Metadata"],
+            "ETag": '"destination-etag"',
+            "VersionId": "destination-version-1",
+        }
+
+    def get_object_tagging(self, **_kwargs):
+        raise AssertionError("trusted AWS Open Data must not claim a GuardDuty verdict")
+
+    def get_object(self, **kwargs):
+        assert kwargs.get("VersionId") == "destination-version-1"
+        return {"Body": BytesIO(self.payload)}
 
 
 class MismatchedImageS3(FakeS3):
@@ -319,6 +343,39 @@ def test_sentinel2_import_uses_fixed_public_source_and_private_quarantine(monkey
     assert uploaded["ServerSideEncryption"] == "AES256"
     assert uploaded["Metadata"]["source-bucket"] == "sentinel-s2-l2a"
     assert uploaded["Metadata"]["source-key"] == "tiles/16/Q/DD/2020/8/29/0/R60m/TCI.jp2"
+
+
+def test_trusted_sentinel_import_verifies_version_etag_and_hash_without_claiming_malware_scan(
+    monkeypatch,
+):
+    monkeypatch.setenv("GUARDDUTY_MALWARE_PROTECTION_ENABLED", "false")
+    settings = configured_settings(monkeypatch)
+    source = FakeSentinelS3()
+    destination = TrustedImportS3(source.payload)
+    aws = AWSIntegrations(settings)
+    aws._s3 = destination
+    aws._sentinel_s3 = source
+    imported = aws.import_sentinel2(
+        "00000000-0000-4000-8000-000000000001",
+        "tiles/16/Q/DD/2020/8/29/0/R60m/TCI.jp2",
+    )
+    monkeypatch.setattr("sentineltwin.aws._jp2_to_jpeg", lambda _payload: b"\xff\xd8\xff" + b"0" * 128)
+
+    _payload, content_type, provenance = aws._read_clean_satellite(
+        {"id": "00000000-0000-4000-8000-000000000001"},
+        imported["object_key"],
+        imported["version_id"],
+        "SOURCE_HASH_VERIFIED",
+        imported["etag"],
+        trusted_source_sha256=imported["source"]["sha256"],
+    )
+
+    assert imported["status"] == "trusted_source_ready"
+    assert content_type == "image/jpeg"
+    assert provenance["content_validation_provider"] == "sentineltwin-allowlisted-aws-open-data"
+    assert provenance["content_validation_status"] == "SOURCE_HASH_VERIFIED"
+    assert provenance["malware_scan_status"] == "NOT_APPLICABLE_TRUSTED_SOURCE"
+    assert provenance["upstream"]["provider"] == "aws-open-data-sentinel-2-l2a"
 
 
 @pytest.mark.parametrize(

@@ -177,6 +177,63 @@ describe('sentinelApi source, error, and persistence contracts', () => {
     })
   })
 
+  it('sends agricultural assumptions with the exact persisted assessment id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      data: {
+        id: 'sim-agriculture-1',
+        hazard: 'agricultural_resilience',
+        memory_context: { learned_memory_id: 'mem-agriculture-1' },
+        learned_memory: { id: 'mem-agriculture-1' },
+        outcome: { resilience_score: 73, crop_stress_score: .48 },
+        evidence: {
+          assessment_id: 'assessment-sentinel-2-1',
+          assessment_provider: 'amazon-bedrock',
+          persistence_provider: 'cockroachdb',
+          confidence: .91,
+        },
+        scenario_assumptions: {
+          rainfall_deficit_percent: 35,
+          heat_anomaly_c: 2.5,
+          irrigation_coverage: .3,
+          duration_hours: 72,
+        },
+      },
+      meta: { mode: 'production', memory_provider: 'cockroachdb' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await sentinelApi.runSimulation({
+      ...simulationRequest,
+      hazard: 'agricultural_resilience',
+      assessmentId: 'assessment-sentinel-2-1',
+      rainfallDeficitPercent: 35,
+      heatAnomalyC: 2.5,
+      irrigationCoverage: .3,
+      horizonHours: 72,
+    })
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(request).toEqual({
+      location_id: 'loc-santa-rosa',
+      hazard: 'agricultural_resilience',
+      assessment_id: 'assessment-sentinel-2-1',
+      parameters: {
+        rainfall_deficit_percent: 35,
+        heat_anomaly_c: 2.5,
+        irrigation_coverage: .3,
+        duration_hours: 72,
+        use_memory: true,
+      },
+    })
+    expect(result).toMatchObject({
+      hazard: 'agricultural_resilience',
+      agriculture: { cropStressScore: 48 },
+      evidence: { assessmentId: 'assessment-sentinel-2-1', provider: 'amazon-bedrock', confidence: 91 },
+      scenarioAssumptions: { rainfallDeficitPercent: 35, heatAnomalyC: 2.5, irrigationCoverage: 30 },
+      persisted: true,
+    })
+  })
+
   it('requires a learned-memory id before claiming a production simulation was persisted', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
       data: { id: 'sim-no-memory', memory_context: { retrieved_count: 4 }, outcome: { resilience_score: 82 } },
@@ -384,6 +441,39 @@ describe('sentinelApi source, error, and persistence contracts', () => {
     expect(fetchMock.mock.calls[1][0]).toContain(encodeURIComponent(objectKey))
     expect(stages).toEqual(['importing', 'scanning'])
     expect(result).toMatchObject({ objectKey, provider: 'amazon-bedrock', persisted: true })
+  })
+
+  it('accepts a hash-verified trusted Sentinel-2 import without claiming GuardDuty scanning', async () => {
+    const sourceKey = 'tiles/10/S/EH/2024/7/15/0/R60m/TCI.jp2'
+    const objectKey = 'sentineltwin/quarantine/loc-1/trusted.jp2'
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: { status: 'trusted_source_assessed', object_key: objectKey, provider: 'aws-open-data-sentinel-2-l2a' },
+        meta: { mode: 'production', memory_provider: 'cockroachdb' },
+      }, true, 202))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          ...completedAssessment,
+          object_key: objectKey,
+          ingestion_authority: 'allowlisted-source-hash',
+          assessment: { ...completedAssessment.assessment, source: { object_key: objectKey } },
+        },
+        meta: { mode: 'production', memory_provider: 'cockroachdb' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const stages: string[] = []
+
+    const result = await sentinelApi.assessSatellite(
+      { locationId: 'loc-1', sentinelSourceKey: sourceKey },
+      (stage) => stages.push(stage),
+    )
+
+    expect(stages).toEqual(['importing', 'verifying', 'assessing'])
+    expect(result).toMatchObject({
+      objectKey,
+      ingestionAuthority: 'allowlisted-source-hash',
+      persisted: true,
+    })
   })
 
   it('stops polling when GuardDuty rejects quarantined imagery', async () => {

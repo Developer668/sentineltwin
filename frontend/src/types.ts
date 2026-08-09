@@ -1,4 +1,4 @@
-export type HazardLayer = 'composite' | 'fire' | 'seismic'
+export type HazardLayer = 'composite' | 'fire' | 'seismic' | 'agricultural_resilience'
 export type RiskLevel = 'high' | 'elevated' | 'moderate'
 export type OutageState = 'idle' | 'running' | 'complete'
 export type RuntimeSource = 'cockroachdb' | 'api-demo' | 'offline-snapshot'
@@ -84,6 +84,7 @@ export interface DashboardData {
   regions: RegionNode[]
   resilience: ResilienceEvidence
   resources: Array<{ label: string; value: number }>
+  assessments: SatelliteAssessment[]
   updatedAt: string
 }
 
@@ -94,10 +95,38 @@ export interface SimulationRequest {
   horizonHours: number
   cascadingImpacts: string[]
   useMemory: boolean
+  assessmentId?: string
+  rainfallDeficitPercent?: number
+  heatAnomalyC?: number
+  irrigationCoverage?: number
+}
+
+export interface AgriculturalEvidence {
+  assessmentId: string
+  provider: string
+  persistenceProvider: string
+  confidence: number
+  createdAt?: string
+  source?: Record<string, unknown>
+}
+
+export interface AgriculturalScenarioAssumptions {
+  rainfallDeficitPercent: number
+  heatAnomalyC: number
+  irrigationCoverage: number
+  durationHours: number
+}
+
+export interface AgriculturalMetrics {
+  cropStressScore: number
+  waterDemandChangePercent: number
+  erosionExposureScore: number
+  wildfireDisruptionScore: number
 }
 
 export interface SimulationResult {
   runId: string
+  hazard: HazardLayer
   status: 'complete'
   planVersion: string
   confidence: number
@@ -109,6 +138,9 @@ export interface SimulationResult {
   recommendations: string[]
   runtime: RuntimeContext
   persisted: boolean
+  evidence?: AgriculturalEvidence
+  scenarioAssumptions?: AgriculturalScenarioAssumptions
+  agriculture?: AgriculturalMetrics
 }
 
 export interface OutageResult {
@@ -146,7 +178,7 @@ export interface SatelliteAssessmentRequest {
   sentinelSourceKey?: string
 }
 
-export type SatelliteAssessmentStage = 'authorizing' | 'uploading' | 'importing' | 'scanning' | 'assessing'
+export type SatelliteAssessmentStage = 'authorizing' | 'uploading' | 'importing' | 'scanning' | 'verifying' | 'assessing'
 
 export interface SatelliteAssessment {
   id: string
@@ -161,6 +193,13 @@ export interface SatelliteAssessment {
   provider: string
   objectKey?: string
   ingestionAuthority?: string
+  features?: {
+    terrain: string
+    vegetationDensity: number
+    moisturePercent: number
+    slopeDegrees: number
+  }
+  source?: Record<string, unknown>
   createdAt: string
   runtime: RuntimeContext
   persisted: boolean

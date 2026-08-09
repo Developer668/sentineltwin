@@ -12,23 +12,23 @@ Target: **2 minutes 40 seconds**, leaving 20 seconds under the hard three-minute
 
 **Screen:** README architecture diagram.
 
-**Say:** “Cognito signs the planner in with authorization code and PKCE, then API Gateway validates the access token. Browser uploads and real Sentinel-2 scenes enter private S3 quarantine. GuardDuty scans the exact version; only a verified clean tag reaches the assessment Lambda and Bedrock. Structured risk, simulation history, audit events, and vectors remain transactionally consistent in CockroachDB Cloud on AWS.”
+**Say:** “Cognito signs the planner in with authorization code and PKCE, then API Gateway validates the access token. This account uses the trusted AWS Open Data path: the API accepts only a strict Sentinel-2 key, stores a versioned private copy, then re-verifies its ETag, JPEG-2000 signature, and SHA-256 before Bedrock. Structured risk, simulation history, audit events, and vectors remain transactionally consistent in CockroachDB Cloud on AWS.”
 
 ## 0:38–1:00 — satellite assessment writes memory
 
 **Screen:** The AWS Open Data mode with the prepared Santa Rosa Sentinel-2 L2A object key. Keep a clean uploaded-image path prepared as backup.
 
-**Action:** Import the real scene, then show its upstream `sentinel-s2-l2a` key/hash, GuardDuty `NO_THREATS_FOUND`, `amazon-bedrock` provider, confidence, and persistent status. If scanning is too slow for the recording, import immediately beforehand and show the resulting tag, CockroachDB row, and CloudWatch trace—do not pretend it completed live.
+**Action:** Import the real scene, then show its upstream `sentinel-s2-l2a` key/hash, exact-version `SOURCE_HASH_VERIFIED` evidence, `amazon-bedrock` provider, confidence, and persistent status. If assessment is too slow for the recording, import immediately beforehand and show the resulting CockroachDB row and CloudWatch trace—do not pretend it completed live.
 
-**Say:** “This is a real Sentinel-2 Level-2A true-colour scene from AWS Open Data, not our deterministic tile. The API only allows the fixed public bucket and key shape, copies it into private quarantine, validates size and JPEG-2000 bytes, then GuardDuty gates analysis. Bedrock receives bounded image bytes only after the clean tag, and CockroachDB atomically commits the assessment, updated location, learned memory, and audit event.”
+**Say:** “This is a real Sentinel-2 Level-2A true-colour scene from AWS Open Data, not our deterministic tile. The API only allows the fixed public bucket and key shape, verifies the private copy byte-for-byte, then sends bounded converted pixels to Bedrock. CockroachDB atomically commits the assessment, updated location, learned memory, and audit event.”
 
 ## 1:00–1:28 — first decision writes memory
 
 **Screen:** Select the highest-risk location; open scenario modal; memory count visible.
 
-**Action:** Choose wildfire, 82% intensity, 12-hour horizon, cascading power impact, ‘use memory’ on; run.
+**Action:** Choose Agricultural Resilience, show that the persisted Sentinel-2 assessment is attached, set visibly labeled rainfall/heat/irrigation assumptions, keep ‘use memory’ on, and run.
 
-**Say:** “The retriever scopes prior memories by hazard and location, uses CockroachDB’s distributed vector index for similarity, then the simulator and Bedrock planner produce a human-reviewable recommendation. This result, provenance, model ID, and outcome are committed back as one durable run.”
+**Say:** “The crop-stress scenario uses observed satellite vegetation, moisture, slope, and fire evidence. Rainfall deficit, heat anomaly, and irrigation are explicitly assumptions—not fake weather. The retriever uses CockroachDB’s distributed vector index, and the full evidence, plan, and outcome are committed as one durable run.”
 
 **Point out:** run ID, retrieved-memory count, confidence, source/freshness, memory count increment. Do not call deterministic fixtures “live satellite data.”
 
@@ -74,6 +74,6 @@ Say “simulated region failure,” not “live zero-RPO failover,” unless a r
 - [ ] No passwords, database hosts/URLs, tokens, account IDs, personal data, or browser autofill appear.
 - [ ] The first write and second recall are visibly connected.
 - [ ] Satellite evidence is either demonstrably live on Bedrock/S3 or explicitly labeled demo/fallback.
-- [ ] Real imagery provenance and GuardDuty clean evidence are readable; no claim suggests scanning guarantees geospatial truth.
+- [ ] Real imagery provenance and exact-version/hash evidence are readable; no claim suggests integrity checks guarantee geospatial truth or current conditions.
 - [ ] AWS and CockroachDB tool evidence is real and accurately described.
 - [ ] Safety, demo-data, and simulated-failure language is honest.

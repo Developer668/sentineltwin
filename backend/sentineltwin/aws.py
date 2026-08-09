@@ -148,7 +148,12 @@ class AWSIntegrations:
                 "mode": "amazon-s3+amazon-bedrock" if self.settings.artifact_bucket and self.settings.bedrock_model_id else "deterministic-demo",
                 "upload_bucket_configured": bool(self.settings.artifact_bucket),
                 "quarantine_prefix": self.settings.satellite_prefix,
-                "malware_scan_provider": "amazon-guardduty",
+                "malware_scan_provider": (
+                    "amazon-guardduty"
+                    if self.settings.guardduty_malware_protection_enabled
+                    else "disabled-trusted-open-data-only"
+                ),
+                "trusted_open_data_verification": True,
                 "real_imagery_provider": SENTINEL_SOURCE_PROVIDER,
                 "last_error": self._errors.get("satellite"),
             },
@@ -167,11 +172,20 @@ class AWSIntegrations:
             "satellite_pipeline_configured": bool(
                 self.settings.artifact_bucket and self.settings.bedrock_model_id
             ),
-            "malware_scan_provider": "amazon-guardduty",
+            "malware_scan_provider": (
+                "amazon-guardduty"
+                if self.settings.guardduty_malware_protection_enabled
+                else "disabled-trusted-open-data-only"
+            ),
         }
 
     def create_satellite_upload(self, location_id: str, filename: str, content_type: str) -> dict:
         """Create a constrained S3 browser upload. A demo deployment never returns a fake URL."""
+        if not self.settings.guardduty_malware_protection_enabled:
+            raise IntegrationNotConfigured(
+                "amazon-guardduty",
+                "Browser uploads are disabled because malware protection is not enabled; use the allowlisted AWS Open Data import.",
+            )
         bucket = self.settings.artifact_bucket
         if not bucket:
             raise IntegrationNotConfigured(
@@ -256,7 +270,7 @@ class AWSIntegrations:
             destination_key = (
                 f"{self.settings.satellite_prefix}/{location_id}/{uuid.uuid4()}-sentinel2-tci.jp2"
             )
-            self._client("s3").put_object(
+            put_result = self._client("s3").put_object(
                 Bucket=bucket,
                 Key=destination_key,
                 Body=payload,
@@ -279,13 +293,31 @@ class AWSIntegrations:
             raise IntegrationNotConfigured(
                 "aws-open-data-sentinel-2", "The Sentinel-2 source could not be imported"
             ) from exc
+        version_id = str(put_result.get("VersionId") or "") or None
+        destination_etag = str(put_result.get("ETag") or "").strip('"')
+        if not self.settings.guardduty_malware_protection_enabled and not version_id:
+            raise ValidationError("trusted Sentinel-2 verification requires an exact S3 object version")
         return {
-            "status": "quarantine_pending_scan",
+            "status": (
+                "quarantine_pending_scan"
+                if self.settings.guardduty_malware_protection_enabled
+                else "trusted_source_ready"
+            ),
             "object_key": destination_key,
             "bucket": bucket,
             "provider": SENTINEL_SOURCE_PROVIDER,
-            "scan_provider": "amazon-guardduty",
-            "ingestion_authority": "guardduty-eventbridge",
+            "version_id": version_id,
+            "etag": destination_etag,
+            "scan_provider": (
+                "amazon-guardduty"
+                if self.settings.guardduty_malware_protection_enabled
+                else "not-used-trusted-aws-open-data"
+            ),
+            "ingestion_authority": (
+                "guardduty-eventbridge"
+                if self.settings.guardduty_malware_protection_enabled
+                else "allowlisted-source-hash"
+            ),
             "source": {
                 "bucket": SENTINEL_SOURCE_BUCKET,
                 "region": SENTINEL_SOURCE_REGION,
@@ -332,6 +364,7 @@ class AWSIntegrations:
         version_id: str | None,
         event_scan_status: str | None,
         event_etag: str | None,
+        trusted_source_sha256: str | None = None,
     ) -> tuple[bytes, str, dict]:
         bucket = self.settings.artifact_bucket
         if not bucket:
@@ -350,14 +383,34 @@ class AWSIntegrations:
         resolved_version = version_id or str(head.get("VersionId") or "") or None
         head_etag = str(head.get("ETag", "")).strip('"')
         if event_etag and event_etag.strip('"') != head_etag:
-            raise ValidationError("GuardDuty event and object ETag do not match")
-        tag_status = self.malware_scan_status(object_key, resolved_version, strict=True)
-        if event_scan_status and event_scan_status.upper() != tag_status:
-            raise ValidationError("GuardDuty event and object scan tag do not match")
-        if tag_status != CLEAN_SCAN_STATUS:
-            if tag_status == "THREATS_FOUND":
-                raise ValidationError("quarantined object was rejected by malware scanning")
-            raise ValidationError("quarantined object does not have a verified clean malware scan")
+            raise ValidationError("ingestion evidence and object ETag do not match")
+        metadata = head.get("Metadata") or {}
+        trusted_import = (event_scan_status or "").upper() == "SOURCE_HASH_VERIFIED"
+        if trusted_import:
+            upstream_key = str(metadata.get("source-key") or "")
+            metadata_sha256 = str(metadata.get("source-sha256") or "").lower()
+            if self.settings.guardduty_malware_protection_enabled:
+                raise ValidationError("trusted-source bypass is disabled when GuardDuty is configured")
+            if not resolved_version:
+                raise ValidationError("trusted Sentinel-2 evidence requires an exact S3 object version")
+            if (
+                metadata.get("source-provider") != SENTINEL_SOURCE_PROVIDER
+                or metadata.get("source-bucket") != SENTINEL_SOURCE_BUCKET
+                or metadata.get("source-region") != SENTINEL_SOURCE_REGION
+                or not SENTINEL_TCI_KEY.fullmatch(upstream_key)
+                or not re.fullmatch(r"[0-9a-f]{64}", metadata_sha256)
+                or trusted_source_sha256 != metadata_sha256
+            ):
+                raise ValidationError("trusted Sentinel-2 source provenance could not be verified")
+            tag_status = "NOT_APPLICABLE_TRUSTED_SOURCE"
+        else:
+            tag_status = self.malware_scan_status(object_key, resolved_version, strict=True)
+            if event_scan_status and event_scan_status.upper() != tag_status:
+                raise ValidationError("GuardDuty event and object scan tag do not match")
+            if tag_status != CLEAN_SCAN_STATUS:
+                if tag_status == "THREATS_FOUND":
+                    raise ValidationError("quarantined object was rejected by malware scanning")
+                raise ValidationError("quarantined object does not have a verified clean malware scan")
         size = int(head.get("ContentLength", 0))
         maximum = max(self.settings.satellite_upload_max_bytes, self.settings.satellite_import_max_bytes)
         if size < 1 or size > maximum:
@@ -365,7 +418,6 @@ class AWSIntegrations:
         content_type = str(head.get("ContentType", "")).lower().split(";", 1)[0]
         if content_type not in SOURCE_IMAGE_TYPES:
             raise ValidationError("quarantined object is not a supported image type")
-        metadata = head.get("Metadata") or {}
         metadata_location = str(metadata.get("location-id", ""))
         if metadata_location and metadata_location != str(location["id"]):
             raise ValidationError("quarantined object location metadata does not match location_id")
@@ -383,6 +435,9 @@ class AWSIntegrations:
             raise ValidationError("quarantined object length changed during processing")
         if not _valid_image_signature(content_type, payload[:16]):
             raise ValidationError("quarantined object bytes do not match its declared content_type")
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        if trusted_import and payload_sha256 != trusted_source_sha256:
+            raise ValidationError("trusted Sentinel-2 object hash does not match its source evidence")
         analysis_type = content_type
         analysis_payload = payload
         if content_type == "image/jp2":
@@ -397,10 +452,22 @@ class AWSIntegrations:
             "analysis_content_type": analysis_type,
             "size_bytes": size,
             "etag": head_etag,
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "malware_scan_provider": "amazon-guardduty",
+            "sha256": payload_sha256,
+            "malware_scan_provider": (
+                "not-used-trusted-aws-open-data" if trusted_import else "amazon-guardduty"
+            ),
             "malware_scan_status": tag_status,
+            "ingestion_authority": (
+                "allowlisted-source-hash" if trusted_import else "guardduty-eventbridge"
+            ),
         }
+        if trusted_import:
+            provenance.update(
+                {
+                    "content_validation_provider": "sentineltwin-allowlisted-aws-open-data",
+                    "content_validation_status": "SOURCE_HASH_VERIFIED",
+                }
+            )
         if metadata.get("source-provider"):
             provenance["upstream"] = {
                 "provider": str(metadata.get("source-provider")),
@@ -420,6 +487,7 @@ class AWSIntegrations:
         version_id: str | None = None,
         event_scan_status: str | None = None,
         event_etag: str | None = None,
+        trusted_source_sha256: str | None = None,
     ) -> dict:
         """Assess one S3 image with Bedrock, or return an explicitly labelled demo result."""
         if demo_tile:
@@ -429,7 +497,12 @@ class AWSIntegrations:
         if not object_key:
             raise ValidationError("object_key is required unless demo_tile is provided")
         image_bytes, analysis_content_type, source_provenance = self._read_clean_satellite(
-            location, object_key, version_id, event_scan_status, event_etag
+            location,
+            object_key,
+            version_id,
+            event_scan_status,
+            event_etag,
+            trusted_source_sha256,
         )
         if not self.settings.bedrock_model_id:
             if not self.settings.demo_mode:

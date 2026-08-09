@@ -19,6 +19,8 @@ coverage/
 .coverage
 htmlcov/
 load-test-results/
+.playwright-cli/
+output/
 
 # Credentials, certificates, and local cloud state must never be published.
 *.pem

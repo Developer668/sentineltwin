@@ -120,7 +120,7 @@ Warm Lambda environments cache configuration. Smoke-test the new credential befo
 
 ## 5. Deploy protected AWS resources
 
-Confirm the selected Bedrock model is available in the region. `psycopg[binary]` and Pillow contain native code, so the deploy script follows [AWS SAM's container-build guidance for native dependencies](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-using-build.html) and defaults to `SENTINEL_SAM_BUILD_MODE=container`. This prevents a macOS wheel from ever entering Lambda. The default Lambda architecture is x86_64; an exact Linux x86_64 host with Python 3.12 may set `SENTINEL_SAM_BUILD_MODE=native-linux` when a constrained build environment cannot unpack the SAM container. ARM64 is supported only with the container mode. The deployment script derives globally unique Cognito/S3 names from the current AWS account and region.
+Confirm the selected Bedrock model is available in the region. `psycopg[binary]` and Pillow contain native code, so the deploy script follows [AWS SAM's container-build guidance for native dependencies](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-using-build.html) and defaults to `SENTINEL_SAM_BUILD_MODE=container`. This prevents a macOS wheel from ever entering Lambda. The template is fixed to x86_64; an exact Linux x86_64 host with Python 3.12 may set `SENTINEL_SAM_BUILD_MODE=native-linux` when a constrained build environment cannot unpack the SAM container. The deployment script derives globally unique Cognito/S3 names from the current AWS account and region.
 
 ```bash
 export STACK_NAME=sentineltwin
@@ -128,22 +128,25 @@ export BEDROCK_MODEL_ID=amazon.nova-lite-v1:0
 export CORS_ORIGIN='http://localhost:5173' # safe bootstrap; CloudFront is locked out until step 6
 export SENTINEL_DEMO_MODE=false
 export AUTH_MODE=cognito               # default; API JWT protection enabled
-export LAMBDA_ARCHITECTURE=x86_64 SENTINEL_SAM_BUILD_MODE=container
+export SENTINEL_SAM_BUILD_MODE=container
 # New-account-safe defaults. Zero omits reservations; the deploy preflight rejects
 # values that exceed the regional quota while preserving Lambda's unreserved pool.
 export API_RESERVED_CONCURRENCY=0 INGESTION_RESERVED_CONCURRENCY=0
 export API_DETAILED_METRICS_ENABLED=false # route-level metrics are an explicit metered opt-in
+export GUARDDUTY_MALWARE_PROTECTION_ENABLED=true # set false only for trusted AWS Open Data mode
 export API_THROTTLE_RATE_LIMIT=20 API_THROTTLE_BURST_LIMIT=40 DATABASE_POOL_MAX_SIZE=4
 make deploy
 ```
 
 `AUTH_MODE=public` is an explicit short-lived opt-out for a synthetic-data demo. Both the deploy script and CloudFormation reject it unless `SENTINEL_DEMO_MODE=true` and `DATABASE_SECRET_ARN`/`CockroachSecretArn` is empty. CloudFormation also blanks S3/Bedrock runtime configuration, omits their Lambda IAM statements, does not create the GuardDuty protection plan/service role, and disables ingestion. Only deterministic demo paths remain; protected Cognito mode is required for real uploads, Sentinel-2 imports, Bedrock, or CockroachDB persistence.
 
+If GuardDuty activation is unavailable in the account, set `GUARDDUTY_MALWARE_PROTECTION_ENABLED=false`. That omits the GuardDuty plan and role, disables browser upload tickets, and permits only the strict Sentinel-2 AWS Open Data importer. The importer writes the upstream hash into versioned private S3, then re-reads the exact version and verifies its ETag, metadata, key shape, length, JPEG-2000 signature, and SHA-256 before Bedrock. This is not a general malware-scanning substitute.
+
 CloudFormation creates:
 
 - API Gateway HTTP API, JWT authorizer, API Lambda, logs, X-Ray, throttles, and alarms;
 - Cognito User Pool with required software-token MFA, `sentineltwin-operators` authorization group, no-secret SPA client, Hosted UI, authorization-code flow, and PKCE-compatible callbacks;
-- private/versioned artifact S3 with a quarantine prefix, GuardDuty Malware Protection and scan-result tags, verdict-filtered EventBridge rule, assessment Lambda, bounded retries, encrypted SQS dead-letter queue, logs, and alarm;
+- private/versioned artifact S3 with a quarantine prefix; optional GuardDuty Malware Protection, scan-result EventBridge rule, assessment Lambda, bounded retries, encrypted SQS dead-letter queue, logs, and alarm;
 - private/versioned web S3, CloudFront Origin Access Control, SPA fallback, cache/security headers;
 - narrowly scoped Bedrock, S3, Secrets Manager, EventBridge, SQS, and Lambda permissions.
 
@@ -215,7 +218,7 @@ REQUIRE_BEDROCK_ASSESSMENT=true \
 make smoke-satellite
 ```
 
-This verifies constrained presigned POST → private S3 quarantine → GuardDuty clean tag → EventBridge → assessment Lambda → Bedrock → atomic CockroachDB assessment/memory write. A deterministic fallback fails the strict Bedrock check instead of being misrepresented as live inference. GuardDuty and EventBridge pricing applies.
+This browser-upload smoke requires `GUARDDUTY_MALWARE_PROTECTION_ENABLED=true` and verifies constrained presigned POST → private S3 quarantine → GuardDuty clean tag → EventBridge → assessment Lambda → Bedrock → atomic CockroachDB assessment/memory write. With GuardDuty disabled, the ticket endpoint intentionally rejects the request. A deterministic fallback fails the strict Bedrock check instead of being misrepresented as live inference. GuardDuty and EventBridge pricing applies when enabled.
 
 Then prove the separate real-data path with the included Santa Rosa Sentinel-2 L2A key (or set another allowlisted `SENTINEL_SOURCE_KEY`):
 
@@ -223,7 +226,7 @@ Then prove the separate real-data path with the included Santa Rosa Sentinel-2 L
 make smoke-sentinel
 ```
 
-That smoke requires the upstream provider/bucket/key, clean verdict, Bedrock provider, and durable CockroachDB write to survive end to end. It never accepts an arbitrary URL or source bucket.
+That smoke requires the upstream provider/bucket/key, either a clean GuardDuty verdict or exact source-hash verification, the Bedrock provider, and a durable CockroachDB write to survive end to end. It never accepts an arbitrary URL or source bucket.
 
 Finally establish a cloud baseline before changing concurrency. The default harness is read-only:
 

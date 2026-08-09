@@ -27,6 +27,7 @@ const stageCopy: Record<Exclude<AssessmentStage, 'select' | 'complete' | 'error'
   uploading: { title: 'Uploading into quarantine', detail: 'Sending the file directly to private Amazon S3' },
   importing: { title: 'Importing real Sentinel-2 imagery', detail: 'Copying an allowlisted L2A true-colour scene from AWS Open Data' },
   scanning: { title: 'Scanning quarantined imagery', detail: 'Waiting for an Amazon GuardDuty malware verdict before analysis' },
+  verifying: { title: 'Verifying source integrity', detail: 'Checking the allowlisted key, S3 version, ETag, image signature, and SHA-256' },
   assessing: { title: 'Assessing terrain and exposure', detail: 'Running the selected risk-assessment pipeline' },
 }
 
@@ -55,14 +56,14 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
 
   useEffect(() => {
     if (!open) return
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && !['authorizing', 'uploading', 'importing', 'scanning', 'assessing'].includes(stage) && onClose()
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && !['authorizing', 'uploading', 'importing', 'scanning', 'verifying', 'assessing'].includes(stage) && onClose()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose, stage])
 
   if (!open) return null
 
-  const busy = ['authorizing', 'uploading', 'importing', 'scanning', 'assessing'].includes(stage)
+  const busy = ['authorizing', 'uploading', 'importing', 'scanning', 'verifying', 'assessing'].includes(stage)
   const validSourceKey = sentinelKeyPattern.test(sourceKey.trim())
 
   const selectFile = (nextFile?: File) => {
@@ -255,7 +256,11 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
               <div className="assessment-progress" role="status" aria-live="polite">
                 <RefreshCw className="spin" size={18} />
                 <span><strong>{stageCopy[stage].title}</strong><small>{stage === 'assessing'
-                  ? mode === 'demo' ? runtime.apiConnected ? 'Running the deterministic API assessor' : 'Running the deterministic local preview' : 'Running Bedrock only after the clean GuardDuty verdict'
+                  ? mode === 'demo'
+                    ? runtime.apiConnected ? 'Running the deterministic API assessor' : 'Running the deterministic local preview'
+                    : mode === 'open-data'
+                      ? 'Running Amazon Bedrock only after allowlist, version, signature, and hash verification'
+                      : 'Running Amazon Bedrock only after the clean GuardDuty verdict'
                   : stageCopy[stage].detail}</small></span>
               </div>
             )}
@@ -264,7 +269,7 @@ export function SatelliteAssessmentModal({ open, location, runtime, onClose, onS
 
             <div className="assessment-runtime-note">
               <span className={`source-dot ${runtime.source}`} />
-              <span><strong>{runtime.label}</strong><small>{mode === 'upload' ? 'Uploads use a server-authorized S3 form; GuardDuty gates every assessment.' : mode === 'open-data' ? 'The API reads only the fixed public Sentinel-2 bucket and copies the selected scene into private quarantine.' : runtime.detail}</small></span>
+              <span><strong>{runtime.label}</strong><small>{mode === 'upload' ? 'Uploads require a server-authorized S3 form and enabled GuardDuty protection.' : mode === 'open-data' ? 'The API reads only the fixed public Sentinel-2 bucket, then verifies the copied bytes and durable provenance.' : runtime.detail}</small></span>
             </div>
 
             <footer>

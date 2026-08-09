@@ -11,6 +11,7 @@ from sentineltwin.app import (
     satellite_event_handler,
 )
 from sentineltwin.errors import ValidationError
+from sentineltwin.repository import DemoRepository
 
 
 def request(method, path, payload=None, query=""):
@@ -85,6 +86,173 @@ def test_simulation_closes_memory_learning_loop():
     assert simulation["memory_context"]["learned_memory_id"]
     assert simulation["agent_plan"]["provider"] == "deterministic-planner"
     assert simulation["agent_plan"]["human_review_required"] is True
+
+
+def test_agricultural_simulation_requires_a_persisted_satellite_assessment():
+    response, body = request(
+        "POST",
+        "/api/simulations",
+        {"location_id": "santa-rosa", "hazard": "agricultural_resilience"},
+    )
+
+    assert response["statusCode"] == 422
+    assert body["data"]["error"]["message"] == (
+        "assessment_id is required for agricultural_resilience simulations"
+    )
+
+
+def test_agricultural_simulation_rejects_demo_assessment_as_real_evidence():
+    _, locations = request("GET", "/api/locations")
+    location_id = locations["data"]["locations"][0]["id"]
+    _, created = request(
+        "POST",
+        "/api/assessments",
+        {"location_id": location_id, "demo_tile": "california-terrain"},
+    )
+
+    response, body = request(
+        "POST",
+        "/api/simulations",
+        {
+            "location_id": location_id,
+            "hazard": "agricultural_resilience",
+            "assessment_id": created["data"]["id"],
+        },
+    )
+
+    assert response["statusCode"] == 422
+    assert body["data"]["error"]["message"] == (
+        "agricultural_resilience requires a CockroachDB-persisted satellite assessment"
+    )
+
+
+def test_agricultural_simulation_uses_server_owned_satellite_evidence():
+    repository = DemoRepository()
+    api = app_module.SentinelAPI(app_module.SETTINGS, repository, app_module.AWS)
+    location = repository.list_locations(limit=1)[0]
+    assessment = repository.save_assessment(
+        location,
+        {
+            "provider": "amazon-bedrock",
+            "model_id": "amazon.nova-lite-v1:0",
+            "fire_risk": 0.81,
+            "earthquake_risk": 0.22,
+            "combined_risk": 0.645,
+            "confidence": 0.91,
+            "summary": "Test-only normalized Sentinel-2 assessment.",
+            "observations": ["Dry vegetation signature present."],
+            "features": {
+                "terrain": "cultivated valley test fixture",
+                "vegetation_density": 0.72,
+                "moisture_percent": 18.0,
+                "slope_degrees": 4.0,
+            },
+            "source": {
+                "provider": "amazon-s3",
+                "bucket": "sentineltwin-test-artifacts",
+                "object_key": f"sentineltwin/quarantine/{location['id']}/test-only.jp2",
+                "version_id": "test-version",
+                "malware_scan_provider": "amazon-guardduty",
+                "malware_scan_status": "NO_THREATS_FOUND",
+                "upstream": {
+                    "provider": "aws-open-data-sentinel-2-l2a",
+                    "bucket": "sentinel-s2-l2a",
+                    "region": "eu-central-1",
+                    "object_key": "tiles/test-only/TCI.jp2",
+                    "sha256": "test-only-sha256",
+                },
+            },
+            "fallback_reason": None,
+            "request_id": "test-request",
+            "usage": None,
+        },
+    )
+    stored = repository.assessments[0]
+    stored["persisted"] = True
+    stored["persistence_provider"] = "cockroachdb"
+
+    with pytest.raises(ValidationError, match="duration_hours must be numeric"):
+        api.dispatch(
+            "POST",
+            "/api/simulations",
+            {},
+            {
+                "location_id": location["id"],
+                "hazard": "agricultural_resilience",
+                "assessment_id": assessment["id"],
+                "parameters": {"duration_hours": "not-a-number"},
+            },
+        )
+
+    status, simulation, _headers = api.dispatch(
+        "POST",
+        "/api/simulations",
+        {},
+        {
+            "location_id": location["id"],
+            "hazard": "agricultural_resilience",
+            "assessment_id": assessment["id"],
+            "parameters": {
+                "vegetation_density": 0.01,
+                "moisture_percent": 99,
+                "rainfall_deficit_percent": 35,
+                "heat_anomaly_c": 2.5,
+                "irrigation_coverage": 0.3,
+                "duration_hours": 72,
+            },
+            "seed": 303,
+        },
+    )
+
+    assert status == 201
+    assert simulation["hazard"] == "agricultural_resilience"
+    assert simulation["evidence"] == {
+        "assessment_id": assessment["id"],
+        "evidence_class": "persisted_satellite_assessment",
+        "persistence_provider": "cockroachdb",
+        "assessment_provider": "amazon-bedrock",
+        "confidence": 0.91,
+        "created_at": assessment["created_at"],
+        "features": {
+            "terrain": "cultivated valley test fixture",
+            "vegetation_density": 0.72,
+            "moisture_percent": 18.0,
+            "slope_degrees": 4.0,
+        },
+        "source": stored["source"],
+    }
+    assert simulation["parameters"]["vegetation_density"] == 0.72
+    assert simulation["parameters"]["moisture_percent"] == 18.0
+    assert simulation["scenario_assumptions"] == {
+        "rainfall_deficit_percent": 35.0,
+        "heat_anomaly_c": 2.5,
+        "irrigation_coverage": 0.3,
+        "duration_hours": 72.0,
+    }
+    assert simulation["outcome"]["crop_stress_score"] > 0
+    assert simulation["learned_memory"]["metadata"]["assessment_id"] == assessment["id"]
+
+    stored["source"] = {
+        **stored["source"],
+        "malware_scan_provider": "not-used-trusted-aws-open-data",
+        "malware_scan_status": "NOT_APPLICABLE_TRUSTED_SOURCE",
+        "content_validation_provider": "sentineltwin-allowlisted-aws-open-data",
+        "content_validation_status": "SOURCE_HASH_VERIFIED",
+    }
+    trusted_status, trusted_simulation, _headers = api.dispatch(
+        "POST",
+        "/api/simulations",
+        {},
+        {
+            "location_id": location["id"],
+            "hazard": "agricultural_resilience",
+            "assessment_id": assessment["id"],
+        },
+    )
+    assert trusted_status == 201
+    assert trusted_simulation["evidence"]["source"]["content_validation_status"] == (
+        "SOURCE_HASH_VERIFIED"
+    )
 
 
 def test_ui_camel_case_request_and_location_slug_are_supported():
@@ -394,6 +562,82 @@ def test_sentinel_import_endpoint_fails_closed_without_s3():
     )
     assert response["statusCode"] == 503
     assert body["data"]["error"]["code"] == "integration_not_configured"
+
+
+def test_trusted_sentinel_import_assesses_the_exact_server_verified_evidence():
+    repository = DemoRepository()
+    location = repository.list_locations(limit=1)[0]
+    source_sha256 = "a" * 64
+    object_key = f"sentineltwin/quarantine/{location['id']}/trusted.jp2"
+
+    class TrustedAWS:
+        def import_sentinel2(self, location_id, source_key):
+            assert location_id == location["id"]
+            assert source_key == "tiles/10/S/EH/2024/7/15/0/R60m/TCI.jp2"
+            return {
+                "status": "trusted_source_ready",
+                "object_key": object_key,
+                "version_id": "version-1",
+                "etag": "etag-1",
+                "source": {"sha256": source_sha256},
+            }
+
+        def assess_satellite(self, assessed_location, **kwargs):
+            assert assessed_location["id"] == location["id"]
+            assert kwargs == {
+                "object_key": object_key,
+                "demo_tile": None,
+                "version_id": "version-1",
+                "event_scan_status": "SOURCE_HASH_VERIFIED",
+                "event_etag": "etag-1",
+                "trusted_source_sha256": source_sha256,
+            }
+            return {
+                "provider": "amazon-bedrock",
+                "model_id": "amazon.nova-lite-v1:0",
+                "fire_risk": 0.71,
+                "earthquake_risk": 0.2,
+                "combined_risk": 0.51,
+                "confidence": 0.88,
+                "summary": "Test-only trusted Sentinel-2 assessment.",
+                "observations": ["Verified source bytes assessed."],
+                "features": {
+                    "terrain": "cultivated valley test fixture",
+                    "vegetation_density": 0.66,
+                    "moisture_percent": 24.0,
+                    "slope_degrees": 3.0,
+                },
+                "source": {
+                    "provider": "amazon-s3",
+                    "object_key": object_key,
+                    "version_id": "version-1",
+                    "malware_scan_status": "NOT_APPLICABLE_TRUSTED_SOURCE",
+                    "content_validation_provider": "sentineltwin-allowlisted-aws-open-data",
+                    "content_validation_status": "SOURCE_HASH_VERIFIED",
+                    "upstream": {"provider": "aws-open-data-sentinel-2-l2a"},
+                },
+                "fallback_reason": None,
+                "request_id": "test-request",
+                "usage": None,
+            }
+
+    api = app_module.SentinelAPI(app_module.SETTINGS, repository, TrustedAWS())
+    status, result, _headers = api.dispatch(
+        "POST",
+        "/api/satellite/imports",
+        {},
+        {
+            "location_id": location["id"],
+            "source_key": "tiles/10/S/EH/2024/7/15/0/R60m/TCI.jp2",
+        },
+    )
+
+    assert status == 202
+    assert result["status"] == "trusted_source_assessed"
+    assert result["assessment_id"] == repository.assessments[0]["id"]
+    assert repository.assessments[0]["source"]["content_validation_status"] == (
+        "SOURCE_HASH_VERIFIED"
+    )
 
 
 def test_api_rejects_oversized_json_before_parsing():

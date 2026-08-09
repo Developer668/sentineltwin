@@ -10,6 +10,7 @@ import {
   FileClock,
   Flame,
   FlaskConical,
+  Leaf,
   RadioTower,
   Satellite,
   ShieldCheck,
@@ -76,7 +77,7 @@ const workspaceCopy: Record<Exclude<WorkspaceId, 'operations'>, { eyebrow: strin
   simulations: {
     eyebrow: 'Bounded decision support',
     title: 'Simulation lab',
-    detail: 'Start a fire, seismic, or compound scenario for the selected location.',
+    detail: 'Start a fire, seismic, compound, or evidence-bound agricultural scenario for the selected location.',
   },
   agents: {
     eyebrow: 'Shared operational memory',
@@ -277,6 +278,7 @@ export function SystemWorkspace(props: SystemWorkspaceProps) {
       { hazard: 'fire', title: 'Wind-driven fire', detail: 'Model rapid spread and evacuation pressure.', icon: Flame, tone: 'orange' },
       { hazard: 'seismic', title: 'Major fault rupture', detail: 'Model access loss and facility impact.', icon: Activity, tone: 'violet' },
       { hazard: 'composite', title: 'Compound cascade', detail: 'Combine fire, seismic, and infrastructure stress.', icon: FlaskConical, tone: 'lime' },
+      { hazard: 'agricultural_resilience', title: 'Agricultural resilience', detail: 'Model crop stress from persisted Sentinel-2 evidence.', icon: Leaf, tone: 'cyan' },
     ]
     return (
       <main className="workspace-view" aria-labelledby="workspace-simulations-title">

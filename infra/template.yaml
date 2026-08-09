@@ -20,11 +20,6 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: amazon.nova-lite-v1:0
-  LambdaArchitecture:
-    Type: String
-    Default: x86_64
-    AllowedValues: [x86_64, arm64]
-    Description: x86_64 supports reproducible native builds on Linux; arm64 requires the container build mode.
   AuthMode:
     Type: String
     Default: cognito
@@ -39,7 +34,12 @@ Parameters:
     Type: String
     Default: sentineltwin/quarantine/
     AllowedPattern: "[A-Za-z0-9!_.*'()/\u0026$@=;:+,? -]+/"
-    Description: GuardDuty Malware Protection scans only this quarantine prefix before EventBridge ingestion.
+    Description: Quarantine prefix for scanned uploads and allowlisted, hash-verified AWS Open Data imports.
+  GuardDutyMalwareProtectionEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Enable GuardDuty-gated browser uploads. When false, only allowlisted AWS Open Data imports are accepted and hash verified.
   ArtifactBucketName:
     Type: String
     Default: sentineltwin-change-me-artifacts
@@ -98,11 +98,14 @@ Conditions:
   HasApiReservedConcurrency: !Not [!Equals [!Ref ApiReservedConcurrency, 0]]
   HasIngestionReservedConcurrency: !Not [!Equals [!Ref IngestionReservedConcurrency, 0]]
   ApiDetailedMetricsOn: !Equals [!Ref ApiDetailedMetricsEnabled, "true"]
+  MalwareProtectionEnabled: !And
+    - !Condition AuthEnabled
+    - !Equals [!Ref GuardDutyMalwareProtectionEnabled, "true"]
 
 Globals:
   Function:
     Runtime: python3.12
-    Architectures: [!Ref LambdaArchitecture]
+    Architectures: [x86_64]
     MemorySize: 1024
     Timeout: 28
     Tracing: Active
@@ -117,6 +120,7 @@ Globals:
         DB_POOL_MAX_SIZE: !Ref DatabasePoolMaxSize
         LOG_LEVEL: INFO
         SATELLITE_PREFIX: !Ref SatelliteInputPrefix
+        GUARDDUTY_MALWARE_PROTECTION_ENABLED: !Ref GuardDutyMalwareProtectionEnabled
         SENTINEL_DEMO_MODE: !Ref DemoMode
         SENTINEL_REQUIRED_GROUP: !If [AuthEnabled, sentineltwin-operators, ""]
 
@@ -381,7 +385,7 @@ Resources:
 
   GuardDutyMalwareProtectionRole:
     Type: AWS::IAM::Role
-    Condition: AuthEnabled
+    Condition: MalwareProtectionEnabled
     Properties:
       Description: Least-privilege service role for GuardDuty Malware Protection on the quarantine prefix.
       AssumeRolePolicyDocument:
@@ -439,7 +443,7 @@ Resources:
 
   SatelliteMalwareProtectionPlan:
     Type: AWS::GuardDuty::MalwareProtectionPlan
-    Condition: AuthEnabled
+    Condition: MalwareProtectionEnabled
     Properties:
       Actions:
         Tagging:
@@ -466,7 +470,7 @@ Resources:
             bucketName: [!Ref ArtifactBucketName]
             objectKey:
               - prefix: !Ref SatelliteInputPrefix
-      State: !If [AuthEnabled, ENABLED, DISABLED]
+      State: !If [MalwareProtectionEnabled, ENABLED, DISABLED]
       Targets:
         - Arn: !GetAtt SatelliteIngestionFunction.Arn
           Id: SatelliteAssessmentLambda
@@ -734,7 +738,7 @@ Outputs:
   SatelliteInputPrefix:
     Value: !Ref SatelliteInputPrefix
   SatelliteMalwareProtectionPlanArn:
-    Condition: AuthEnabled
+    Condition: MalwareProtectionEnabled
     Description: GuardDuty Malware Protection plan that scans the quarantine prefix.
     Value: !GetAtt SatelliteMalwareProtectionPlan.Arn
   CognitoUserPoolId:

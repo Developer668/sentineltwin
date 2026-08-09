@@ -158,7 +158,7 @@ function applyRuntimeTruth(data: DashboardData, runtime: RuntimeContext): Dashbo
   return next
 }
 
-function normalizeDashboard(value: unknown): DashboardData | null {
+function normalizeDashboard(value: unknown, runtime: RuntimeContext): DashboardData | null {
   if (!isRecord(value) || !Array.isArray(value.locations) || value.locations.length === 0) return null
   const next = structuredClone(demoDashboard)
   const positions = [
@@ -226,6 +226,14 @@ function normalizeDashboard(value: unknown): DashboardData | null {
     ]
   }
 
+  const assessments = Array.isArray(value.recent_assessments)
+    ? value.recent_assessments
+    : Array.isArray(value.recentAssessments) ? value.recentAssessments : []
+  next.assessments = assessments
+    .filter(isRecord)
+    .map((assessment) => normalizeAssessment(assessment, runtime))
+    .filter((assessment) => assessment.persisted)
+
   const resilience = isRecord(value.resilience) ? value.resilience : null
   if (resilience) {
     const topologyVerified = resilience.topology_verified === true
@@ -274,8 +282,15 @@ function normalizeSimulation(value: unknown, runtime: RuntimeContext): Simulatio
     .slice(0, 3)
   const resilience = asPercent(outcome.resilience_score ?? raw.confidence, 86)
   const persisted = runtime.persistence === 'cockroachdb' && learnedMemoryId !== null
+  const rawHazard = String(raw.hazard ?? 'composite')
+  const hazard: SimulationResult['hazard'] = rawHazard === 'agricultural_resilience'
+    ? 'agricultural_resilience'
+    : rawHazard === 'earthquake' ? 'seismic' : rawHazard === 'fire' ? 'fire' : 'composite'
+  const evidence = isRecord(raw.evidence) ? raw.evidence : null
+  const scenarioAssumptions = isRecord(raw.scenario_assumptions) ? raw.scenario_assumptions : null
   return {
     runId: String(raw.id),
+    hazard,
     status: 'complete',
     planVersion: String(raw.plan_version ?? 'v1.0'),
     confidence: resilience,
@@ -291,6 +306,32 @@ function normalizeSimulation(value: unknown, runtime: RuntimeContext): Simulatio
     recommendations,
     runtime,
     persisted,
+    ...(hazard === 'agricultural_resilience' && evidence ? {
+      evidence: {
+        assessmentId: String(evidence.assessment_id ?? ''),
+        provider: String(evidence.assessment_provider ?? 'unknown'),
+        persistenceProvider: String(evidence.persistence_provider ?? 'unknown'),
+        confidence: asPercent(evidence.confidence, 0),
+        ...(evidence.created_at == null ? {} : { createdAt: String(evidence.created_at) }),
+        ...(isRecord(evidence.source) ? { source: evidence.source } : {}),
+      },
+    } : {}),
+    ...(hazard === 'agricultural_resilience' && scenarioAssumptions ? {
+      scenarioAssumptions: {
+        rainfallDeficitPercent: asNumber(scenarioAssumptions.rainfall_deficit_percent),
+        heatAnomalyC: asNumber(scenarioAssumptions.heat_anomaly_c),
+        irrigationCoverage: asPercent(scenarioAssumptions.irrigation_coverage),
+        durationHours: asNumber(scenarioAssumptions.duration_hours),
+      },
+    } : {}),
+    ...(hazard === 'agricultural_resilience' ? {
+      agriculture: {
+        cropStressScore: asPercent(outcome.crop_stress_score),
+        waterDemandChangePercent: asNumber(outcome.water_demand_change_percent),
+        erosionExposureScore: asPercent(outcome.erosion_exposure_score),
+        wildfireDisruptionScore: asPercent(outcome.wildfire_disruption_score),
+      },
+    } : {}),
   }
 }
 
@@ -371,6 +412,7 @@ function normalizeAssessment(value: unknown, runtime: RuntimeContext): Satellite
     ? assessment.observations.map(String).slice(0, 6)
     : []
   const source = isRecord(assessment.source) ? assessment.source : {}
+  const features = isRecord(assessment.features) ? assessment.features : {}
   return {
     id: String(assessment.id ?? `assessment-${Date.now()}`),
     locationId: String(assessment.location_id ?? assessment.locationId ?? ''),
@@ -383,6 +425,13 @@ function normalizeAssessment(value: unknown, runtime: RuntimeContext): Satellite
     observations,
     provider: String(assessment.provider ?? assessment.model_provider ?? (runtime.persistence === 'cockroachdb' ? 'Configured AWS assessor' : 'Deterministic demo assessor')),
     objectKey: assessment.object_key ? String(assessment.object_key) : assessment.s3_key ? String(assessment.s3_key) : source.object_key ? String(source.object_key) : undefined,
+    features: {
+      terrain: String(features.terrain ?? 'unknown terrain'),
+      vegetationDensity: asNumber(features.vegetation_density),
+      moisturePercent: asNumber(features.moisture_percent),
+      slopeDegrees: asNumber(features.slope_degrees),
+    },
+    source,
     createdAt: String(assessment.created_at ?? assessment.createdAt ?? new Date().toISOString()),
     runtime,
     persisted: runtime.persistence === 'cockroachdb' && assessment.persisted === true,
@@ -478,7 +527,7 @@ async function pollForAssessment(objectKey: string, timeoutMs = 180_000): Promis
     if (Date.now() >= deadline) break
     await new Promise((resolve) => window.setTimeout(resolve, 1_500))
   } while (Date.now() < deadline)
-  throw new SentinelApiError('GuardDuty scanning or assessment was not complete within 3 minutes.', undefined, 'processing-timeout')
+  throw new SentinelApiError('Source verification or assessment was not complete within 3 minutes.', undefined, 'processing-timeout')
 }
 
 export const sentinelApi = {
@@ -489,7 +538,7 @@ export const sentinelApi = {
       // of declaring a healthy persistent API offline during warm-up.
       const response = await requestEnvelope<unknown>('/api/dashboard', undefined, 12_000)
       const runtime = runtimeFrom(response.meta, response.data)
-      const data = normalizeDashboard(response.data)
+      const data = normalizeDashboard(response.data, runtime)
       if (!data) throw new SentinelApiError('The dashboard response did not match the expected contract.', undefined, 'contract')
       return { data: applyRuntimeTruth(data, runtime), runtime }
     } catch (error) {
@@ -503,7 +552,22 @@ export const sentinelApi = {
 
   async runSimulation(payload: SimulationRequest): Promise<SimulationResult> {
     try {
-      const requestBody = {
+      const agricultural = payload.hazard === 'agricultural_resilience'
+      if (agricultural && !payload.assessmentId?.trim()) {
+        throw new SentinelApiError('A persisted Sentinel-2 assessment is required for agricultural resilience.')
+      }
+      const requestBody = agricultural ? {
+        location_id: payload.locationId,
+        hazard: 'agricultural_resilience',
+        assessment_id: payload.assessmentId,
+        parameters: {
+          rainfall_deficit_percent: payload.rainfallDeficitPercent ?? 35,
+          heat_anomaly_c: payload.heatAnomalyC ?? 2,
+          irrigation_coverage: payload.irrigationCoverage ?? .4,
+          duration_hours: payload.horizonHours,
+          use_memory: payload.useMemory,
+        },
+      } : {
         location_id: payload.locationId,
         hazard: payload.hazard === 'composite' ? 'multi_hazard' : payload.hazard === 'seismic' ? 'earthquake' : 'fire',
         parameters: {
@@ -517,6 +581,7 @@ export const sentinelApi = {
       return normalizeSimulation(response.data, runtimeFrom(response.meta, response.data))
     } catch (error) {
       if (!isNetworkUnavailable(error)) throw error
+      if (payload.hazard === 'agricultural_resilience') throw error
       await new Promise((resolve) => window.setTimeout(resolve, 850))
       return { ...demoSimulationResult, runId: `sim-preview-${String(Date.now()).slice(-4)}` }
     }
@@ -551,10 +616,16 @@ export const sentinelApi = {
         }, 30_000)
         const imported = isRecord(importResponse.data) ? importResponse.data : {}
         objectKey = imported.object_key == null ? undefined : String(imported.object_key)
-        if (!objectKey || String(imported.status ?? '') !== 'quarantine_pending_scan') {
-          throw new SentinelApiError('Sentinel-2 import did not return a quarantined object.', undefined, 'contract')
+        const importStatus = String(imported.status ?? '')
+        if (!objectKey || !['quarantine_pending_scan', 'trusted_source_assessed'].includes(importStatus)) {
+          throw new SentinelApiError('Sentinel-2 import did not return verified ingestion evidence.', undefined, 'contract')
         }
-        onStage?.('scanning')
+        if (importStatus === 'trusted_source_assessed') {
+          onStage?.('verifying')
+          onStage?.('assessing')
+        } else {
+          onStage?.('scanning')
+        }
       } else if (request.file) {
         onStage?.('authorizing')
         const ticketResponse = await requestEnvelope<unknown>('/api/uploads', {

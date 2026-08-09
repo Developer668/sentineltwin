@@ -6,7 +6,7 @@
 - Health is public for load-balancer/operator readiness. Dashboard, upload, assessment, simulation, memory, agent, and resilience routes are JWT-protected when `AuthMode=cognito`.
 - API Gateway emits structured JSON access logs with request ID, route, status, response size, and integration error.
 - Both Lambda log groups are retained 30 days and X-Ray tracing is active. Application logs should carry `request_id`, `simulation_id`/`assessment_id`, `object_key` hash or safe key, agent, memory mode, latency, and error class—never prompts, tokens, image bytes, or database URLs.
-- CloudWatch alarms cover API errors/throttles and ingestion errors. GuardDuty emits scan verdicts, EventBridge delivery and Lambda execution retries are bounded, and exhausted events enter `SatelliteFailureQueue`. Add notification actions during live operations.
+- CloudWatch alarms cover API errors/throttles and ingestion errors. When GuardDuty is enabled, EventBridge delivery and Lambda execution retries are bounded and exhausted events enter `SatelliteFailureQueue`. In trusted-source mode, the synchronous importer is traced through the API Lambda and browser uploads remain disabled.
 - CockroachDB Cloud Console supplies SQL/transaction latency, contention, storage, and audit views; capture a sanitized screenshot for submission evidence.
 
 ## Suggested SLOs (post-load-test targets)
@@ -15,7 +15,7 @@
 |---|---|
 | API availability | 99.9% monthly for read-only dashboard |
 | Simulation request | p95 < 8 s; hard API budget 28 s |
-| Image assessment | Establish from quarantine upload through GuardDuty verdict to committed assessment; do not set a target until a cloud run measures scan latency |
+| Image assessment | Establish separately for trusted-source import and, if enabled, quarantine upload through GuardDuty verdict; do not set a target until cloud runs measure latency |
 | Memory write correctness | 100% acknowledged writes committed once by idempotency key |
 | Memory recall | p95 < 750 ms on scoped top-k query at expected corpus size |
 | Recovery point | CockroachDB acknowledged transaction; never claim `RPO 0` from a simulated Basic-plan demo |
@@ -32,8 +32,8 @@
 
 ### Satellite ingestion alarm or dead-letter message
 
-1. Stop new uploads if failure volume is growing; do not broaden the quarantine prefix or bypass malware scanning.
-2. Check the GuardDuty plan status and scan-result/post-scan-tag events, then the EventBridge rule, ingestion Lambda log, and encrypted queue metadata. Do not paste image bytes, presigned fields, or user tokens into tickets.
+1. Stop new imports/uploads if failure volume is growing; do not broaden the source allowlist, quarantine prefix, or evidence gate.
+2. In trusted-source mode, check the API Lambda's source HEAD/GET, S3 exact-version/hash verification, decode, Bedrock, and database stages. If GuardDuty is enabled, check its plan/status tags, EventBridge rule, ingestion Lambda, and encrypted queue. Do not paste image bytes, presigned fields, or user tokens into tickets.
 3. Classify threat/unsupported/denied/failed scan, tag mismatch, validation, JPEG-2000 decode, Bedrock, S3, CockroachDB, or deployment errors. An assessment row may already exist because redelivery is idempotent by `object_key`.
 4. Fix the cause and query CockroachDB for the object key before replay. Replay only the exact reviewed event; repeated valid deliveries return the existing assessment.
 5. Delete a queue message only after the durable assessment/memory/audit transaction is confirmed or the input is explicitly rejected and documented.
@@ -80,7 +80,7 @@ Redeploy the last known-good git commit through SAM. Schema migrations must be b
 ## Cost controls
 
 - Basic CockroachDB plan and explicit spend limit are provisioning defaults; verify current pricing in Console.
-- API/ingestion Lambda reserved concurrency 10/4, API throttle 20 req/s with burst 40, per-process DB pool cap 4, CloudFront PriceClass 100, bounded logs/retries, 14-day DLQ retention, and a small Bedrock model constrain demo spend.
-- GuardDuty Malware Protection scans, Cognito, EventBridge, SQS, Bedrock image/text use, cross-region Sentinel-2 transfer, S3 versions, and a multi-region CockroachDB topology can incur charges; verify current pricing and set budgets externally.
+- API/ingestion Lambda reserved concurrency defaults to 0/0 for this low-quota account; API throttle 20 req/s with burst 40, per-process DB pool cap 4, CloudFront PriceClass 100, bounded logs/retries, 14-day DLQ retention, and a small Bedrock model constrain demo spend.
+- Cognito, Bedrock image/text use, cross-region Sentinel-2 transfer, S3 versions, and optional GuardDuty/EventBridge/SQS can incur charges or consume credits; verify current pricing and set budgets externally.
 - Set AWS Budgets separately (not in this stack because notification identity is user-specific).
 - Destroy unused web resources after judging and explicitly decide whether to retain evidence/DB data.

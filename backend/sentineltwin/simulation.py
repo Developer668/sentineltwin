@@ -11,7 +11,7 @@ from typing import Any
 from .errors import ValidationError
 from .memory import memory_learning_modifier
 
-HAZARDS = {"fire", "earthquake", "multi_hazard"}
+HAZARDS = {"fire", "earthquake", "multi_hazard", "agricultural_resilience"}
 UTC = timezone.utc
 
 
@@ -222,6 +222,101 @@ def simulate_earthquake(
     return outcome, timeline, recommendations
 
 
+def simulate_agricultural_resilience(
+    parameters: dict,
+    learned_modifier: float,
+) -> tuple[dict, list[dict], list[str], dict]:
+    """Estimate relative crop stress from satellite evidence and named assumptions.
+
+    This deliberately avoids claiming observed weather, crop yield, or farm-scale
+    agronomy. Vegetation, moisture, slope, and fire risk must be injected by the
+    API from one durable satellite assessment. Weather-like inputs remain
+    operator-defined scenario assumptions and are echoed separately.
+    """
+    vegetation = _number(parameters.get("vegetation_density"), "vegetation_density", 0, 1)
+    moisture_percent = _number(parameters.get("moisture_percent"), "moisture_percent", 0, 100)
+    slope = _number(parameters.get("slope_degrees"), "slope_degrees", 0, 90)
+    fire_risk = _number(parameters.get("fire_risk"), "fire_risk", 0, 1)
+    rainfall_deficit = _number(
+        parameters.get("rainfall_deficit_percent", 25),
+        "rainfall_deficit_percent",
+        0,
+        100,
+    )
+    heat_anomaly = _number(parameters.get("heat_anomaly_c", 2), "heat_anomaly_c", -5, 10)
+    irrigation = _number(parameters.get("irrigation_coverage", 0.4), "irrigation_coverage", 0, 1)
+    duration_hours = _number(parameters.get("duration_hours", 72), "duration_hours", 12, 720)
+
+    moisture_stress = 1 - moisture_percent / 100
+    rainfall_stress = rainfall_deficit / 100
+    heat_stress = _clamp((heat_anomaly + 1) / 8)
+    vegetation_gap = 1 - vegetation
+    erosion_exposure = _clamp((slope / 45) * (0.58 * vegetation_gap + 0.42 * rainfall_stress))
+    irrigation_relief = irrigation * 0.28
+    crop_stress = _clamp(
+        0.32 * moisture_stress
+        + 0.24 * rainfall_stress
+        + 0.16 * heat_stress
+        + 0.10 * vegetation_gap
+        + 0.10 * fire_risk
+        + 0.08 * erosion_exposure
+        - irrigation_relief
+        - learned_modifier * 0.16
+    )
+    water_demand_change = max(
+        0.0,
+        rainfall_deficit * 0.42 + max(0.0, heat_anomaly) * 7.5 - irrigation * 12,
+    )
+    wildfire_disruption = _clamp(fire_risk * (0.64 + vegetation * 0.18) + moisture_stress * 0.18)
+    impact = _clamp(crop_stress * 0.64 + erosion_exposure * 0.14 + wildfire_disruption * 0.22)
+    resilience = _clamp(1 - impact + irrigation * 0.16 + learned_modifier * 0.18)
+
+    assumptions = {
+        "rainfall_deficit_percent": rainfall_deficit,
+        "heat_anomaly_c": heat_anomaly,
+        "irrigation_coverage": irrigation,
+        "duration_hours": duration_hours,
+    }
+    outcome = _round_map(
+        {
+            "severity": _severity(impact),
+            "impact_score": impact,
+            "crop_stress_score": crop_stress,
+            "water_demand_change_percent": water_demand_change,
+            "erosion_exposure_score": erosion_exposure,
+            "wildfire_disruption_score": wildfire_disruption,
+            "resilience_score": resilience * 100,
+            "learned_impact_reduction_percent": learned_modifier * 100,
+        }
+    )
+
+    checkpoints = sorted({0.0, min(24.0, duration_hours), min(48.0, duration_hours), duration_hours})
+    timeline = []
+    for hour in checkpoints:
+        elapsed = hour / duration_hours
+        timeline.append(
+            _round_map(
+                {
+                    "hour": hour,
+                    "crop_stress_score": _clamp(crop_stress * (0.72 + 0.28 * elapsed)),
+                    "relative_water_pressure": _clamp((water_demand_change / 100) * elapsed),
+                    "erosion_exposure_score": erosion_exposure,
+                }
+            )
+        )
+
+    recommendations = [
+        "Ground-truth the highest-stress parcels before allocating water or changing crop plans",
+        "Prioritize irrigation checks where low satellite moisture overlaps high vegetation density",
+        "Maintain defensible buffers where wildfire disruption intersects cultivated land",
+    ]
+    if rainfall_deficit >= 35:
+        recommendations.insert(0, "Stage a drought water-allocation review using current local supply data")
+    if erosion_exposure >= 0.35:
+        recommendations.append("Inspect sloped bare-soil areas for erosion controls before heavy rain")
+    return outcome, timeline, recommendations, assumptions
+
+
 def run_simulation(
     location: dict,
     hazard: str,
@@ -231,7 +326,9 @@ def run_simulation(
 ) -> dict:
     hazard = hazard.strip().lower().replace("-", "_")
     if hazard not in HAZARDS:
-        raise ValidationError("hazard must be fire, earthquake, or multi_hazard")
+        raise ValidationError(
+            "hazard must be fire, earthquake, multi_hazard, or agricultural_resilience"
+        )
     parameters = parameters or {}
     memories = memories or []
     if not isinstance(parameters, dict):
@@ -245,10 +342,16 @@ def run_simulation(
     modifier, learned_tactics = memory_learning_modifier(memories)
     now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
+    scenario_assumptions = None
     if hazard == "fire":
         outcome, timeline, recommendations = simulate_fire(location, parameters, modifier, rng)
     elif hazard == "earthquake":
         outcome, timeline, recommendations = simulate_earthquake(location, parameters, modifier, rng)
+    elif hazard == "agricultural_resilience":
+        outcome, timeline, recommendations, scenario_assumptions = simulate_agricultural_resilience(
+            parameters,
+            modifier,
+        )
     else:
         fire, fire_timeline, fire_recs = simulate_fire(location, parameters.get("fire", parameters), modifier, rng)
         quake, quake_timeline, quake_recs = simulate_earthquake(location, parameters.get("earthquake", parameters), modifier, rng)
@@ -280,7 +383,7 @@ def run_simulation(
         ]))
 
     recommendations = list(dict.fromkeys(learned_tactics + recommendations))[:6]
-    return {
+    result = {
         "hazard": hazard,
         "status": "completed",
         "seed": seed,
@@ -296,5 +399,12 @@ def run_simulation(
             "learned_modifier": modifier,
             "learned_tactics": learned_tactics,
         },
-        "disclaimer": "Decision-support simulation only; not an operational hazard forecast.",
+        "disclaimer": (
+            "Decision-support stress scenario only; not observed weather, a crop-yield forecast, or agronomic advice."
+            if hazard == "agricultural_resilience"
+            else "Decision-support simulation only; not an operational hazard forecast."
+        ),
     }
+    if scenario_assumptions is not None:
+        result["scenario_assumptions"] = _round_map(scenario_assumptions)
+    return result

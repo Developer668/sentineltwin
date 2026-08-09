@@ -31,10 +31,14 @@ payload=$(jq -cn --arg location_id "$location_id" --arg source_key "$source_key"
   '{location_id:$location_id,source_key:$source_key}')
 import_response=$(api_request POST /satellite/imports "$payload")
 object_key=$(printf '%s\n' "$import_response" | jq -er '.data.object_key')
-[[ $(printf '%s\n' "$import_response" | jq -er '.data.status') == "quarantine_pending_scan" ]]
+import_status=$(printf '%s\n' "$import_response" | jq -er '.data.status')
+case "$import_status" in
+  quarantine_pending_scan|trusted_source_assessed) ;;
+  *) echo "Unexpected Sentinel-2 import status: $import_status" >&2; exit 1 ;;
+esac
 [[ $(printf '%s\n' "$import_response" | jq -er '.data.provider') == "aws-open-data-sentinel-2-l2a" ]]
 
-echo "Imported s3://sentinel-s2-l2a/$source_key into private quarantine: $object_key"
+echo "Imported s3://sentinel-s2-l2a/$source_key into private evidence storage: $object_key"
 encoded_object_key=$(jq -rn --arg value "$object_key" '$value | @uri')
 assessment=""
 for ((_attempt=1; _attempt<=240; _attempt++)); do
@@ -52,10 +56,20 @@ done
 
 [[ -n "$assessment" ]] || { echo "Sentinel-2 assessment did not finish within 8 minutes." >&2; exit 1; }
 printf '%s\n' "$assessment" | jq .
-[[ $(printf '%s\n' "$assessment" | jq -er '.source.malware_scan_status') == "NO_THREATS_FOUND" ]]
+verification_status=$(printf '%s\n' "$assessment" | jq -er '.source.malware_scan_status')
+if [[ "$verification_status" == "NO_THREATS_FOUND" ]]; then
+  [[ $(printf '%s\n' "$assessment" | jq -er '.source.malware_scan_provider') == "amazon-guardduty" ]]
+elif [[ "$verification_status" == "NOT_APPLICABLE_TRUSTED_SOURCE" ]]; then
+  [[ $(printf '%s\n' "$assessment" | jq -er '.source.content_validation_provider') == "sentineltwin-allowlisted-aws-open-data" ]]
+  [[ $(printf '%s\n' "$assessment" | jq -er '.source.content_validation_status') == "SOURCE_HASH_VERIFIED" ]]
+  [[ $(printf '%s\n' "$assessment" | jq -er '.source.ingestion_authority') == "allowlisted-source-hash" ]]
+else
+  echo "Assessment has no accepted source-verification evidence: $verification_status" >&2
+  exit 1
+fi
 [[ $(printf '%s\n' "$assessment" | jq -er '.source.upstream.provider') == "aws-open-data-sentinel-2-l2a" ]]
 [[ $(printf '%s\n' "$assessment" | jq -er '.source.upstream.bucket') == "sentinel-s2-l2a" ]]
 [[ $(printf '%s\n' "$assessment" | jq -er '.source.upstream.object_key') == "$source_key" ]]
 [[ $(printf '%s\n' "$assessment" | jq -er '.persisted') == "true" ]]
 [[ $(printf '%s\n' "$assessment" | jq -er '.provider') == "amazon-bedrock" ]]
-echo "Real Sentinel-2 → GuardDuty → Bedrock → CockroachDB smoke passed."
+echo "Real Sentinel-2 → verified AWS evidence → Bedrock → CockroachDB smoke passed."

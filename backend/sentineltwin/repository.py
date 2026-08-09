@@ -284,6 +284,12 @@ class DemoRepository:
             items = [item for item in items if item["location_id"] == location_id]
         return copy.deepcopy(items[:limit])
 
+    def get_assessment(self, assessment_id: str) -> dict:
+        item = next((value for value in self.assessments if value["id"] == assessment_id), None)
+        if not item:
+            raise NotFound("satellite assessment", assessment_id)
+        return copy.deepcopy(item)
+
     def find_assessment_by_object_key(self, object_key: str) -> dict | None:
         item = next((value for value in self.assessments if value.get("source", {}).get("object_key") == object_key), None)
         return copy.deepcopy(item) if item else None

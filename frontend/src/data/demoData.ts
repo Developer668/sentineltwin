@@ -11,6 +11,7 @@ export const offlineRuntime: RuntimeContext = {
 
 export const demoDashboard: DashboardData = {
   updatedAt: '14:22:46 PT',
+  assessments: [],
   locations: [
     { id: 'santa-rosa', name: 'Santa Rosa', county: 'Sonoma County, CA', risk: 'high', hazards: ['fire', 'seismic'], impactWindow: '6–24 hrs', fireScore: 92, seismicScore: 68, x: 30, y: 29 },
     { id: 'san-bernardino', name: 'San Bernardino', county: 'San Bernardino County, CA', risk: 'high', hazards: ['fire', 'seismic'], impactWindow: '12–36 hrs', fireScore: 87, seismicScore: 82, x: 72, y: 73 },
@@ -66,7 +67,7 @@ export const demoDashboard: DashboardData = {
 }
 
 export const demoSimulationResult: SimulationResult = {
-  runId: 'sim-st-2048', status: 'complete', planVersion: 'v7.3', confidence: 86, retrievedMemories: 12,
+  runId: 'sim-st-2048', hazard: 'composite', status: 'complete', planVersion: 'v7.3', confidence: 86, retrievedMemories: 12,
   recalledMemoryIds: ['demo-memory-camp-fire', 'demo-memory-northridge'],
   learnedMemoryId: null,
   learningLoop: 'local deterministic preview · no learned memory write',

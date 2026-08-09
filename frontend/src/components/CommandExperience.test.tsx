@@ -92,5 +92,9 @@ describe('functional command-center navigation', () => {
     const compound = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Compound cascade'))
     await act(async () => compound?.click())
     expect(onRunSimulation).toHaveBeenCalledWith('composite')
+
+    const agriculture = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Agricultural resilience'))
+    await act(async () => agriculture?.click())
+    expect(onRunSimulation).toHaveBeenCalledWith('agricultural_resilience')
   })
 })

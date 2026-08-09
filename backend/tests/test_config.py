@@ -100,6 +100,14 @@ def test_absent_demo_setting_preserves_zero_setup_local_demo(monkeypatch):
     assert make_repository(settings).mode == "demo"
 
 
+def test_guardduty_can_be_disabled_without_enabling_unscanned_uploads(monkeypatch):
+    monkeypatch.setenv("GUARDDUTY_MALWARE_PROTECTION_ENABLED", "false")
+
+    settings = Settings.from_env()
+
+    assert settings.guardduty_malware_protection_enabled is False
+
+
 def test_explicit_non_demo_without_database_is_fail_closed(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_SECRET_ARN", raising=False)

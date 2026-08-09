@@ -83,6 +83,7 @@ class Settings:
     satellite_upload_max_bytes: int
     satellite_import_max_bytes: int
     satellite_upload_expires_seconds: int
+    guardduty_malware_protection_enabled: bool
     allowed_failover_regions: tuple[str, ...]
     required_operator_group: str
 
@@ -122,6 +123,9 @@ class Settings:
             satellite_upload_max_bytes=max(1, min(20_000_000, int(os.getenv("SATELLITE_UPLOAD_MAX_BYTES", "5000000")))),
             satellite_import_max_bytes=max(65_536, min(25_000_000, int(os.getenv("SATELLITE_IMPORT_MAX_BYTES", "12000000")))),
             satellite_upload_expires_seconds=max(60, min(3600, int(os.getenv("SATELLITE_UPLOAD_EXPIRES_SECONDS", "900")))),
+            guardduty_malware_protection_enabled=_truthy(
+                os.getenv("GUARDDUTY_MALWARE_PROTECTION_ENABLED", "true")
+            ),
             allowed_failover_regions=tuple(
                 region.strip()
                 for region in os.getenv("ALLOWED_FAILOVER_REGIONS", "us-west-2,us-east-1").split(",")

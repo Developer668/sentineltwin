@@ -170,7 +170,24 @@ class SentinelAPI:
             if not location_id or not source_key:
                 raise ValidationError("location_id and source_key are required")
             location = self._resolve_location(location_id)
-            return 202, self.aws.import_sentinel2(str(location["id"]), source_key), None
+            imported = self.aws.import_sentinel2(str(location["id"]), source_key)
+            if imported.get("status") == "trusted_source_ready":
+                assessment = self._create_assessment(
+                    {
+                        "location_id": str(location["id"]),
+                        "object_key": imported["object_key"],
+                    },
+                    version_id=imported.get("version_id"),
+                    event_scan_status="SOURCE_HASH_VERIFIED",
+                    event_etag=imported.get("etag"),
+                    trusted_source_sha256=(imported.get("source") or {}).get("sha256"),
+                )
+                imported = {
+                    **imported,
+                    "status": "trusted_source_assessed",
+                    "assessment_id": assessment["id"],
+                }
+            return 202, imported, None
         if path == "/api/assessments" and method == "GET":
             object_key = str(query.get("object_key") or "").strip()
             if object_key:
@@ -178,7 +195,11 @@ class SentinelAPI:
                 if len(object_key) > 500 or ".." in object_key or not re.fullmatch(pattern, object_key):
                     raise ValidationError("object_key is outside the server-issued quarantine prefix")
                 assessment = self.repository.find_assessment_by_object_key(object_key)
-                scan_status = CLEAN_SCAN_STATUS if assessment else self.aws.malware_scan_status(object_key)
+                scan_status = (
+                    str((assessment.get("source") or {}).get("malware_scan_status") or CLEAN_SCAN_STATUS)
+                    if assessment
+                    else self.aws.malware_scan_status(object_key)
+                )
                 pipeline_status = (
                     "completed"
                     if assessment
@@ -188,6 +209,9 @@ class SentinelAPI:
                     if scan_status == CLEAN_SCAN_STATUS
                     else "pending"
                 )
+                authority = "guardduty-eventbridge"
+                if assessment:
+                    authority = str((assessment.get("source") or {}).get("ingestion_authority") or authority)
                 return 200, {
                     "assessment": assessment,
                     "assessments": [assessment] if assessment else [],
@@ -195,7 +219,7 @@ class SentinelAPI:
                     "status": pipeline_status,
                     "malware_scan_status": scan_status,
                     "object_key": object_key,
-                    "ingestion_authority": "guardduty-eventbridge",
+                    "ingestion_authority": authority,
                 }, None
             items = self.repository.list_assessments(
                 location_id=query.get("location_id"),
@@ -316,8 +340,10 @@ class SentinelAPI:
             raise ValidationError("title must be a string of 200 characters or fewer")
         hazard = str(payload.get("hazard", "multi_hazard")).strip().lower().replace("-", "_")
         hazard = {"wildfire": "fire", "seismic": "earthquake", "composite": "multi_hazard"}.get(hazard, hazard)
-        if hazard not in {"fire", "earthquake", "multi_hazard"}:
-            raise ValidationError("hazard must be fire, earthquake, or multi_hazard")
+        if hazard not in {"fire", "earthquake", "multi_hazard", "agricultural_resilience"}:
+            raise ValidationError(
+                "hazard must be fire, earthquake, multi_hazard, or agricultural_resilience"
+            )
         payload = {**payload, "hazard": hazard}
         for key, maximum in (("agent_id", 128), ("memory_type", 64), ("location_id", 128), ("simulation_id", 128)):
             value = payload.get(key)
@@ -359,6 +385,7 @@ class SentinelAPI:
         version_id: str | None = None,
         event_scan_status: str | None = None,
         event_etag: str | None = None,
+        trusted_source_sha256: str | None = None,
     ) -> dict:
         location_id = str(payload.get("location_id") or payload.get("locationId") or "").strip()
         object_key = str(payload.get("object_key") or payload.get("s3_key") or "").strip() or None
@@ -384,6 +411,7 @@ class SentinelAPI:
             version_id=version_id,
             event_scan_status=event_scan_status,
             event_etag=event_etag,
+            trusted_source_sha256=trusted_source_sha256,
         )
         return self.repository.save_assessment(location, result)
 
@@ -393,8 +421,38 @@ class SentinelAPI:
             raise ValidationError("location_id is required")
         hazard = str(payload.get("hazard", "multi_hazard")).lower().replace("-", "_")
         hazard = {"seismic": "earthquake", "composite": "multi_hazard", "wildfire": "fire"}.get(hazard, hazard)
+        if hazard == "agricultural_resilience" and not str(
+            payload.get("assessment_id") or payload.get("assessmentId") or ""
+        ).strip():
+            raise ValidationError("assessment_id is required for agricultural_resilience simulations")
         location = self._resolve_location(location_id)
         location_id = str(location["id"])
+        if hazard == "agricultural_resilience":
+            assessment_id = str(payload.get("assessment_id") or payload.get("assessmentId") or "").strip()
+            assessment = self.repository.get_assessment(assessment_id)
+            if not assessment.get("persisted") or assessment.get("persistence_provider") != "cockroachdb":
+                raise ValidationError(
+                    "agricultural_resilience requires a CockroachDB-persisted satellite assessment"
+                )
+            if str(assessment.get("location_id")) != location_id:
+                raise ValidationError("assessment_id does not belong to location_id")
+            source = dict(assessment.get("source") or {})
+            upstream = dict(source.get("upstream") or {})
+            guardduty_verified = source.get("malware_scan_status") == "NO_THREATS_FOUND"
+            trusted_source_verified = (
+                source.get("content_validation_provider")
+                == "sentineltwin-allowlisted-aws-open-data"
+                and source.get("content_validation_status") == "SOURCE_HASH_VERIFIED"
+                and source.get("malware_scan_status") == "NOT_APPLICABLE_TRUSTED_SOURCE"
+            )
+            if (
+                assessment.get("provider") != "amazon-bedrock"
+                or not (guardduty_verified or trusted_source_verified)
+                or upstream.get("provider") != "aws-open-data-sentinel-2-l2a"
+            ):
+                raise ValidationError(
+                    "agricultural_resilience requires clean AWS Open Data Sentinel-2 evidence assessed by Amazon Bedrock"
+                )
         raw_parameters = payload.get("parameters") or {}
         if not isinstance(raw_parameters, dict):
             raise ValidationError("parameters must be a JSON object")
@@ -407,7 +465,47 @@ class SentinelAPI:
             if camel in payload and snake not in parameters:
                 parameters[snake] = payload[camel]
         if "duration_hours" in parameters and "duration_minutes" not in parameters:
-            parameters["duration_minutes"] = float(parameters["duration_hours"]) * 60
+            duration_hours = parameters["duration_hours"]
+            if isinstance(duration_hours, bool):
+                raise ValidationError("duration_hours must be numeric")
+            try:
+                duration_hours = float(duration_hours)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("duration_hours must be numeric") from exc
+            if not math.isfinite(duration_hours):
+                raise ValidationError("duration_hours must be numeric")
+            parameters["duration_hours"] = duration_hours
+            parameters["duration_minutes"] = duration_hours * 60
+        evidence = None
+        if hazard == "agricultural_resilience":
+            features = dict(assessment.get("features") or {})
+            duration_hours = parameters.get("duration_hours", 72)
+            parameters = {
+                "terrain": features.get("terrain"),
+                "vegetation_density": features.get("vegetation_density"),
+                "moisture_percent": features.get("moisture_percent"),
+                "slope_degrees": features.get("slope_degrees"),
+                "fire_risk": assessment.get("fire_risk"),
+                "assessment_confidence": assessment.get("confidence"),
+                "rainfall_deficit_percent": raw_parameters.get("rainfall_deficit_percent", 25),
+                "heat_anomaly_c": raw_parameters.get("heat_anomaly_c", 2),
+                "irrigation_coverage": raw_parameters.get("irrigation_coverage", 0.4),
+                "duration_hours": duration_hours,
+                "duration_minutes": float(duration_hours) * 60,
+            }
+            evidence = {
+                "assessment_id": assessment["id"],
+                "evidence_class": "persisted_satellite_assessment",
+                "persistence_provider": "cockroachdb",
+                "assessment_provider": assessment["provider"],
+                "confidence": assessment["confidence"],
+                "created_at": assessment["created_at"],
+                "features": {
+                    key: features.get(key)
+                    for key in ("terrain", "vegetation_density", "moisture_percent", "slope_degrees")
+                },
+                "source": source,
+            }
         memory_query = str(payload.get("memory_query") or f"{hazard} {location['terrain']} emergency response successful tactics")
         if len(memory_query) > 2000:
             raise ValidationError("memory_query must be 2000 characters or fewer")
@@ -432,6 +530,8 @@ class SentinelAPI:
             memories=memories,
             requested_seed=payload.get("seed"),
         )
+        if evidence is not None:
+            simulation["evidence"] = evidence
         simulation.update(
             {
                 "id": str(uuid.uuid4()),
@@ -469,6 +569,15 @@ class SentinelAPI:
                     "recommended_tactic": simulation["recommendations"][0],
                     "seed": simulation["seed"],
                     "source": "sentineltwin simulation",
+                    **(
+                        {
+                            "assessment_id": evidence["assessment_id"],
+                            "evidence": evidence,
+                            "scenario_assumptions": simulation.get("scenario_assumptions", {}),
+                        }
+                        if evidence is not None
+                        else {}
+                    ),
                 },
             }
         saved, learned_memory = self.repository.save_simulation_with_memory(simulation, memory_payload)

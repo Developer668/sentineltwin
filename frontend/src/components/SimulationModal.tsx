@@ -1,20 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { Activity, Check, ChevronRight, Clock3, Database, Flame, Play, RefreshCw, ShieldAlert, X } from 'lucide-react'
-import type { HazardLayer, LocationRisk, RuntimeContext, SimulationRequest, SimulationResult } from '../types'
+import { Activity, Check, ChevronRight, Clock3, Database, Flame, Leaf, Play, RefreshCw, ShieldAlert, X } from 'lucide-react'
+import type { HazardLayer, LocationRisk, RuntimeContext, SatelliteAssessment, SimulationRequest, SimulationResult } from '../types'
 import { useDialogFocus } from '../lib/useDialogFocus'
 import { describeApiError } from '../lib/api'
+import { isAgriculturalEvidenceReady } from '../lib/agriculturalEvidence'
 
 interface SimulationModalProps {
   open: boolean
   location: LocationRisk
   runtime: RuntimeContext
   initialLayer: HazardLayer
+  assessment?: SatelliteAssessment
   onClose: () => void
+  onAssessSatellite?: () => void
   onSubmit: (request: SimulationRequest) => Promise<SimulationResult>
   onComplete: (result: SimulationResult) => void
 }
 
-const hazardOrder: HazardLayer[] = ['fire', 'seismic', 'composite']
+const hazardOrder: HazardLayer[] = ['fire', 'seismic', 'composite', 'agricultural_resilience']
 
 function providerLabel(provider: string): string {
   if (provider === 'amazon-bedrock') return 'Amazon Bedrock'
@@ -23,13 +26,16 @@ function providerLabel(provider: string): string {
   return provider.replaceAll('-', ' ')
 }
 
-export function SimulationModal({ open, location, runtime, initialLayer, onClose, onSubmit, onComplete }: SimulationModalProps) {
+export function SimulationModal({ open, location, runtime, initialLayer, assessment, onClose, onAssessSatellite, onSubmit, onComplete }: SimulationModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const [hazard, setHazard] = useState<HazardLayer>(initialLayer)
   const [intensity, setIntensity] = useState(82)
   const [horizonHours, setHorizonHours] = useState(24)
   const [impacts, setImpacts] = useState<string[]>(['Power grid', 'Transportation', 'Water systems'])
   const [useMemory, setUseMemory] = useState(true)
+  const [rainfallDeficitPercent, setRainfallDeficitPercent] = useState(35)
+  const [heatAnomalyC, setHeatAnomalyC] = useState(2)
+  const [irrigationCoverage, setIrrigationCoverage] = useState(40)
   const [status, setStatus] = useState<'editing' | 'running' | 'complete'>('editing')
   const [result, setResult] = useState<SimulationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -41,6 +47,9 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
       setStatus('editing')
       setResult(null)
       setError(null)
+      setRainfallDeficitPercent(35)
+      setHeatAnomalyC(2)
+      setIrrigationCoverage(40)
     }
   }, [open, initialLayer])
 
@@ -54,12 +63,30 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
   if (!open) return null
 
   const toggleImpact = (impact: string) => setImpacts((current) => current.includes(impact) ? current.filter((item) => item !== impact) : [...current, impact])
+  const agriculturalEvidenceReady = isAgriculturalEvidenceReady(assessment, location.id, runtime)
+  const selectHazard = (next: HazardLayer) => {
+    setHazard(next)
+    if (next === 'agricultural_resilience') setHorizonHours(72)
+  }
 
   const run = async () => {
     setStatus('running')
     setError(null)
     try {
-      const nextResult = await onSubmit({ locationId: location.id, hazard, intensity, horizonHours, cascadingImpacts: impacts, useMemory })
+      const nextResult = await onSubmit({
+        locationId: location.id,
+        hazard,
+        intensity,
+        horizonHours,
+        cascadingImpacts: impacts,
+        useMemory,
+        ...(hazard === 'agricultural_resilience' ? {
+          assessmentId: assessment?.id,
+          rainfallDeficitPercent,
+          heatAnomalyC,
+          irrigationCoverage: irrigationCoverage / 100,
+        } : {}),
+      })
       setResult(nextResult)
       setStatus('complete')
       onComplete(nextResult)
@@ -105,6 +132,13 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
               )}
               <small className="agent-loop-path">{result.learningLoop} · recalled {result.recalledMemoryIds.length ? result.recalledMemoryIds.join(', ') : 'no memory IDs'}</small>
             </section>
+            {result.hazard === 'agricultural_resilience' && result.evidence && (
+              <section className="agricultural-result-evidence" aria-label="Agricultural resilience evidence">
+                <span><Leaf size={16} /><strong>Agricultural resilience</strong></span>
+                <small>Assessment {result.evidence.assessmentId} · {result.evidence.provider} · {result.evidence.confidence}% confidence</small>
+                {result.agriculture && <strong>{result.agriculture.cropStressScore}% crop stress · {result.agriculture.waterDemandChangePercent}% relative water-demand change</strong>}
+              </section>
+            )}
             <div className="human-review-notice"><ShieldAlert size={15} /><span><strong>Human review required</strong><small>Decision support only—validate recommendations against current incident command and field intelligence.</small></span></div>
             <button className="primary-button full" type="button" onClick={onClose}>{result.persisted ? 'Review learned outcome' : 'Return to command center'} <ChevronRight size={16} /></button>
           </div>
@@ -122,34 +156,71 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
                 event.preventDefault()
                 const direction = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1
                 const next = hazardOrder[(hazardOrder.indexOf(hazard) + direction + hazardOrder.length) % hazardOrder.length]
-                setHazard(next)
+                selectHazard(next)
                 window.requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>(`[data-hazard="${next}"]`)?.focus())
               }}>
-                <button data-hazard="fire" type="button" role="radio" aria-checked={hazard === 'fire'} tabIndex={hazard === 'fire' ? 0 : -1} className={hazard === 'fire' ? 'selected' : ''} onClick={() => setHazard('fire')}><Flame size={17} /> Wildfire</button>
-                <button data-hazard="seismic" type="button" role="radio" aria-checked={hazard === 'seismic'} tabIndex={hazard === 'seismic' ? 0 : -1} className={hazard === 'seismic' ? 'selected' : ''} onClick={() => setHazard('seismic')}><Activity size={17} /> Earthquake</button>
-                <button data-hazard="composite" type="button" role="radio" aria-checked={hazard === 'composite'} tabIndex={hazard === 'composite' ? 0 : -1} className={hazard === 'composite' ? 'selected' : ''} onClick={() => setHazard('composite')}><ShieldAlert size={17} /> Compound</button>
+                <button data-hazard="fire" type="button" role="radio" aria-checked={hazard === 'fire'} tabIndex={hazard === 'fire' ? 0 : -1} className={hazard === 'fire' ? 'selected' : ''} onClick={() => selectHazard('fire')}><Flame size={17} /> Wildfire</button>
+                <button data-hazard="seismic" type="button" role="radio" aria-checked={hazard === 'seismic'} tabIndex={hazard === 'seismic' ? 0 : -1} className={hazard === 'seismic' ? 'selected' : ''} onClick={() => selectHazard('seismic')}><Activity size={17} /> Earthquake</button>
+                <button data-hazard="composite" type="button" role="radio" aria-checked={hazard === 'composite'} tabIndex={hazard === 'composite' ? 0 : -1} className={hazard === 'composite' ? 'selected' : ''} onClick={() => selectHazard('composite')}><ShieldAlert size={17} /> Compound</button>
+                <button data-hazard="agricultural_resilience" type="button" role="radio" aria-checked={hazard === 'agricultural_resilience'} tabIndex={hazard === 'agricultural_resilience' ? 0 : -1} className={hazard === 'agricultural_resilience' ? 'selected' : ''} onClick={() => selectHazard('agricultural_resilience')}><Leaf size={17} /> Agriculture</button>
               </div>
             </div>
 
-            <div className="form-columns">
-              <label>
-                <span className="field-label">Intensity <b>{intensity}%</b></span>
-                <input type="range" min="40" max="100" value={intensity} onChange={(event) => setIntensity(Number(event.target.value))} />
-              </label>
-              <label>
-                <span className="field-label"><Clock3 size={13} /> Time horizon</span>
-                <select value={horizonHours} onChange={(event) => setHorizonHours(Number(event.target.value))}>
-                  <option value={12}>12 hours</option><option value={24}>24 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option>
-                </select>
-              </label>
-            </div>
+            {hazard === 'agricultural_resilience' ? (
+              <>
+                <div className={`agricultural-evidence-card ${agriculturalEvidenceReady ? 'ready' : 'missing'}`}>
+                  <Leaf size={18} />
+                  <span>
+                    <strong>{agriculturalEvidenceReady ? 'Persisted Sentinel-2 evidence ready' : 'Persisted Sentinel-2 evidence required'}</strong>
+                    <small>{agriculturalEvidenceReady
+                      ? `${assessment?.provider} · assessment ${assessment?.id} · ${assessment?.confidence}% confidence`
+                      : 'Run a real Sentinel-2 assessment for this location before modeling agricultural stress.'}</small>
+                  </span>
+                  {!agriculturalEvidenceReady && onAssessSatellite && <button type="button" onClick={onAssessSatellite}>Assess imagery</button>}
+                </div>
+                <p className="agricultural-assumption-label">Scenario assumptions—not observed weather</p>
+                <div className="agricultural-assumptions">
+                  <label>
+                    <span className="field-label">Rainfall deficit <b>{rainfallDeficitPercent}%</b></span>
+                    <input name="rainfall-deficit" type="range" min="0" max="100" value={rainfallDeficitPercent} onChange={(event) => setRainfallDeficitPercent(Number(event.target.value))} />
+                  </label>
+                  <label>
+                    <span className="field-label">Heat anomaly <b>{heatAnomalyC}°C</b></span>
+                    <input name="heat-anomaly" type="range" min="-5" max="10" step="0.5" value={heatAnomalyC} onChange={(event) => setHeatAnomalyC(Number(event.target.value))} />
+                  </label>
+                  <label>
+                    <span className="field-label">Irrigation coverage <b>{irrigationCoverage}%</b></span>
+                    <input name="irrigation-coverage" type="range" min="0" max="100" value={irrigationCoverage} onChange={(event) => setIrrigationCoverage(Number(event.target.value))} />
+                  </label>
+                  <label>
+                    <span className="field-label"><Clock3 size={13} /> Stress horizon</span>
+                    <select value={horizonHours} onChange={(event) => setHorizonHours(Number(event.target.value))}>
+                      <option value={24}>24 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option>
+                    </select>
+                  </label>
+                </div>
+              </>
+            ) : (
+              <div className="form-columns">
+                <label>
+                  <span className="field-label">Intensity <b>{intensity}%</b></span>
+                  <input type="range" min="40" max="100" value={intensity} onChange={(event) => setIntensity(Number(event.target.value))} />
+                </label>
+                <label>
+                  <span className="field-label"><Clock3 size={13} /> Time horizon</span>
+                  <select value={horizonHours} onChange={(event) => setHorizonHours(Number(event.target.value))}>
+                    <option value={12}>12 hours</option><option value={24}>24 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option>
+                  </select>
+                </label>
+              </div>
+            )}
 
-            <fieldset className="impact-options">
+            {hazard !== 'agricultural_resilience' && <fieldset className="impact-options">
               <legend className="field-label">Include cascading impacts</legend>
               {['Power grid', 'Transportation', 'Water systems', 'Communications'].map((impact) => (
                 <label key={impact}><input type="checkbox" checked={impacts.includes(impact)} onChange={() => toggleImpact(impact)} /><span><Check size={11} /></span>{impact}</label>
               ))}
-            </fieldset>
+            </fieldset>}
 
             <label className="memory-switch">
               <span className="switch-copy"><Database size={18} /><span><strong>Retrieve shared memory</strong><small>{runtime.persistence === 'cockroachdb' ? 'CockroachDB vector + spatial similarity' : runtime.apiConnected ? 'Deterministic in-memory similarity (ephemeral)' : 'Bundled deterministic memory preview'}</small></span></span>
@@ -165,7 +236,7 @@ export function SimulationModal({ open, location, runtime, initialLayer, onClose
 
             <footer>
               <button className="secondary-button" type="button" onClick={onClose} disabled={status === 'running'}>Cancel</button>
-              <button className="primary-button" type="button" onClick={run} disabled={status === 'running'}>
+              <button className="primary-button" type="button" onClick={run} disabled={status === 'running' || (hazard === 'agricultural_resilience' && !agriculturalEvidenceReady)}>
                 {status === 'running' ? <RefreshCw size={16} className="spin" /> : <Play size={16} fill="currentColor" />} {status === 'running' ? 'Running agents…' : error ? 'Retry simulation' : 'Run simulation'}
               </button>
             </footer>

@@ -120,7 +120,6 @@ def test_new_account_defaults_omit_reserved_concurrency_and_detailed_metrics(tmp
     assert "ApiReservedConcurrency=0" in sam_log
     assert "IngestionReservedConcurrency=0" in sam_log
     assert "ApiDetailedMetricsEnabled=false" in sam_log
-    assert "LambdaArchitecture=x86_64" in sam_log
     assert "build --use-container" in sam_log
 
 
@@ -169,6 +168,16 @@ def test_detailed_api_metrics_require_an_explicit_opt_in(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert "ApiDetailedMetricsEnabled=true" in sam_log
+
+
+def test_guardduty_can_be_disabled_for_trusted_aws_open_data_only(tmp_path: Path):
+    result, sam_log = _run_deploy_script(
+        tmp_path,
+        overrides={"GUARDDUTY_MALWARE_PROTECTION_ENABLED": "false"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "GuardDutyMalwareProtectionEnabled=false" in sam_log
 
 
 def test_native_linux_build_uses_matching_python_without_docker_container(tmp_path: Path):

@@ -44,7 +44,7 @@ Redact organization IDs, usernames, network details, and hosts when appropriate.
 
 ## 3. Managed MCP Server — optional, safe inspection
 
-The placeholder config at `infra/mcp/managed-mcp.example.json` targets `https://cockroachlabs.cloud/mcp`. Obtain the exact client snippet and cluster selection from CockroachDB Cloud Console, keep tokens outside git, enable read-only mode, and use a distinct least-privilege/audited identity.
+The OAuth-first config at `infra/mcp/managed-mcp.example.json` targets `https://cockroachlabs.cloud/mcp` with the official `mcp-cluster-id` header. Obtain the exact client snippet and cluster selection from CockroachDB Cloud Console, keep identifiers and credentials outside git, authorize read-only access, and use `infra/mcp/read-only-evidence.sql` for sanitized inspection.
 
 Judge-friendly read-only prompts:
 
