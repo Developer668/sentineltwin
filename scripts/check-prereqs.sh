@@ -24,7 +24,7 @@ for tool in "${optional[@]}"; do
   fi
 done
 if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
-  echo "  [not running] Docker daemon (required by make deploy for Linux arm64 packaging)"
+  echo "  [not running] Docker daemon (required by the default containerized Lambda build)"
 fi
 
 if command -v python3.12 >/dev/null 2>&1; then

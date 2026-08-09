@@ -98,7 +98,7 @@ done
 echo "Applying SentinelTwin schema to isolated CockroachDB on loopback."
 COCKROACH_URL="$default_url" "$cockroach_binary" sql --set=errexit=true \
   --execute 'CREATE DATABASE IF NOT EXISTS sentineltwin;'
-DATABASE_URL="$database_url" "$python_binary" database/migrate.py
+DATABASE_URL="$database_url" "$python_binary" database/migrate.py --include-demo-fixtures
 
 env \
   PYTHONPATH=backend \

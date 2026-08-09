@@ -1,10 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useGSAP } from '@gsap/react'
-import gsap from 'gsap'
-import { ScrollTrigger } from 'gsap/ScrollTrigger'
-import { Play, Satellite } from 'lucide-react'
-import { CommandHero } from './components/CommandHero'
-import { EvidenceCarousel } from './components/EvidenceCarousel'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Header } from './components/Header'
 import { MemoryRail } from './components/MemoryRail'
 import { OutcomePanel } from './components/OutcomePanel'
@@ -13,19 +7,24 @@ import { RiskWatchlist } from './components/RiskWatchlist'
 import { SatelliteAssessmentModal } from './components/SatelliteAssessmentModal'
 import { Sidebar } from './components/Sidebar'
 import { SimulationModal } from './components/SimulationModal'
+import { SystemWorkspace } from './components/SystemWorkspace'
 import { Toast } from './components/Toast'
 import { demoDashboard, offlineRuntime } from './data/demoData'
 import { describeApiError, sentinelApi } from './lib/api'
 import { cognitoAuth } from './lib/auth'
-import type { DashboardData, HazardLayer, OutageResult, OutageState, SatelliteAssessment, SatelliteAssessmentRequest, SatelliteAssessmentStage, SimulationRequest, SimulationResult } from './types'
+import type { DashboardData, HazardLayer, OutageResult, OutageState, SatelliteAssessment, SatelliteAssessmentRequest, SatelliteAssessmentStage, SimulationRequest, SimulationResult, WorkspaceId } from './types'
 
-gsap.registerPlugin(useGSAP, ScrollTrigger)
-
-const learningStatement = 'Every completed scenario should leave the next operator with stronger evidence, clearer limits, and a more defensible plan.'
-const learningWords = learningStatement.split(' ')
+const workspaceLabels: Record<WorkspaceId, string> = {
+  operations: 'Operations',
+  awareness: 'Situational Awareness',
+  incidents: 'Incidents',
+  resources: 'Resources',
+  plans: 'Plans',
+  simulations: 'Simulations',
+  agents: 'Agents',
+}
 
 export default function App() {
-  const shellRef = useRef<HTMLDivElement>(null)
   const [dashboard, setDashboard] = useState<DashboardData>(() => structuredClone(demoDashboard))
   const [runtime, setRuntime] = useState(offlineRuntime)
   const [auth, setAuth] = useState(() => cognitoAuth.state())
@@ -39,6 +38,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(() => new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZoneName: 'short' }).format(new Date()))
   const [planVersion, setPlanVersion] = useState('v7.3')
   const [toast, setToast] = useState<string | null>(null)
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('operations')
 
   useEffect(() => {
     let active = true
@@ -70,53 +70,6 @@ export default function App() {
     const timeout = window.setTimeout(() => setToast(null), 4200)
     return () => window.clearTimeout(timeout)
   }, [toast])
-
-  useGSAP(() => {
-    const media = gsap.matchMedia()
-    media.add('(prefers-reduced-motion: no-preference)', () => {
-      const words = gsap.utils.toArray<HTMLElement>('.desire-copy .scrub-word')
-      gsap.fromTo(words, { opacity: 0.14 }, {
-        opacity: 1,
-        stagger: 0.055,
-        ease: 'none',
-        scrollTrigger: {
-          trigger: '.desire-copy',
-          start: 'top 82%',
-          end: 'bottom 40%',
-          scrub: 0.7,
-        },
-      })
-
-      gsap.utils.toArray<HTMLElement>('[data-scroll-image]').forEach((element) => {
-        gsap.fromTo(element, { scale: 0.84, opacity: 0.28 }, {
-          scale: 1,
-          opacity: 1,
-          transformOrigin: '50% 50%',
-          ease: 'none',
-          scrollTrigger: {
-            trigger: element,
-            start: 'top 92%',
-            end: 'center 56%',
-            scrub: 0.8,
-            invalidateOnRefresh: true,
-          },
-        })
-        gsap.to(element, {
-          opacity: 0.22,
-          filter: 'brightness(.58) saturate(.72)',
-          ease: 'none',
-          scrollTrigger: {
-            trigger: element,
-            start: 'bottom 32%',
-            end: 'bottom top',
-            scrub: 0.8,
-            invalidateOnRefresh: true,
-          },
-        })
-      })
-    })
-    return () => media.revert()
-  }, { scope: shellRef })
 
   const selectedLocation = useMemo(
     () => dashboard.locations.find((location) => location.id === selectedLocationId) ?? dashboard.locations[0] ?? demoDashboard.locations[0],
@@ -239,77 +192,75 @@ export default function App() {
     setToast(`${feature} is represented in this hackathon command-center surface; the core simulation, assessment, and continuity workflows are interactive.`)
   }, [])
 
+  const navigateWorkspace = useCallback((workspace: WorkspaceId) => {
+    setActiveWorkspace(workspace)
+    window.history.replaceState(null, '', `#${workspace}`)
+  }, [])
+
+  const openSimulation = useCallback((hazard?: HazardLayer) => {
+    if (hazard) setLayer(hazard)
+    setSimulationOpen(true)
+  }, [])
+
+  useEffect(() => {
+    document.title = `${workspaceLabels[activeWorkspace]} · SentinelTwin`
+  }, [activeWorkspace])
+
   return (
-    <div ref={shellRef} className="app-shell taste-refresh">
+    <div className="app-shell workspace-shell">
       <a className="skip-link" href="#risk-map">Skip to risk map</a>
-      <Sidebar runtime={runtime} onUnavailable={showPreviewLimit} />
-      <div className="command-canvas">
-        <Header
+      <Sidebar runtime={runtime} activeWorkspace={activeWorkspace} onNavigate={navigateWorkspace} onUnavailable={showPreviewLimit} />
+      <Header
+        runtime={runtime}
+        auth={auth}
+        workspaceLabel={workspaceLabels[activeWorkspace]}
+        currentTime={currentTime}
+        updatedAt={dashboard.updatedAt}
+        onAssessSatellite={() => setAssessmentOpen(true)}
+        onRunSimulation={() => openSimulation()}
+        onAuthAction={handleAuth}
+        onInfo={showPreviewLimit}
+      />
+
+      {activeWorkspace === 'operations' ? (
+        <main className="operations-workspace" aria-label="Operations command center">
+          <RiskWatchlist locations={dashboard.locations} selectedId={selectedLocation.id} onSelect={setSelectedLocationId} onInfo={showPreviewLimit} />
+          <RiskMap layer={layer} onLayerChange={setLayer} locations={dashboard.locations} selected={selectedLocation} onSelect={setSelectedLocationId} runtime={runtime} onInfo={showPreviewLimit} />
+          <MemoryRail
+            memory={dashboard.memory}
+            activities={dashboard.activities}
+            regions={dashboard.regions}
+            resilience={dashboard.resilience}
+            runtime={runtime}
+            outageState={outageState}
+            outageResult={outageResult}
+            outageError={outageError}
+            onOutage={simulateOutage}
+            onRestore={restoreRegion}
+          />
+          <OutcomePanel timeline={dashboard.timeline} metrics={dashboard.planMetrics} resources={dashboard.resources} planVersion={planVersion} runtime={runtime} onInfo={showPreviewLimit} />
+        </main>
+      ) : (
+        <SystemWorkspace
+          workspace={activeWorkspace}
+          dashboard={dashboard}
           runtime={runtime}
-          auth={auth}
-          currentTime={currentTime}
-          updatedAt={dashboard.updatedAt}
+          selectedLocation={selectedLocation}
+          layer={layer}
+          planVersion={planVersion}
+          outageState={outageState}
+          outageResult={outageResult}
+          outageError={outageError}
+          onSelectLocation={setSelectedLocationId}
+          onLayerChange={setLayer}
+          onNavigate={navigateWorkspace}
+          onRunSimulation={openSimulation}
           onAssessSatellite={() => setAssessmentOpen(true)}
-          onRunSimulation={() => setSimulationOpen(true)}
-          onAuthAction={handleAuth}
+          onOutage={simulateOutage}
+          onRestore={restoreRegion}
           onInfo={showPreviewLimit}
         />
-
-        <main className="command-page overflow-x-hidden w-full max-w-full">
-          <CommandHero onRunSimulation={() => setSimulationOpen(true)} onAssessSatellite={() => setAssessmentOpen(true)} />
-
-          <section id="regional-picture" className="operations-chapter" aria-labelledby="regional-picture-title">
-            <div className="chapter-heading max-w-6xl">
-              <h2 id="regional-picture-title">One region. Several failure paths.</h2>
-              <p>Explore the live operational picture without losing the provenance, persistence, and human-review limits behind every signal.</p>
-            </div>
-
-            <div className="interest-bento grid-flow-dense">
-              <RiskWatchlist locations={dashboard.locations} selectedId={selectedLocation.id} onSelect={setSelectedLocationId} onInfo={showPreviewLimit} />
-              <RiskMap layer={layer} onLayerChange={setLayer} locations={dashboard.locations} selected={selectedLocation} onSelect={setSelectedLocationId} runtime={runtime} onInfo={showPreviewLimit} />
-              <EvidenceCarousel memory={dashboard.memory} activities={dashboard.activities} resilience={dashboard.resilience} runtime={runtime} />
-            </div>
-          </section>
-
-          <section className="learning-chapter" aria-labelledby="learning-title">
-            <div className="chapter-heading desire-heading max-w-6xl">
-              <h2 id="learning-title">Operational memory that earns its place.</h2>
-              <p className="desire-copy">
-                {learningWords.map((word, index) => (
-                  <span className="scrub-word" key={`${word}-${index}`}>{word}{index === learningWords.length - 1 ? '' : ' '}</span>
-                ))}
-              </p>
-            </div>
-
-            <div className="desire-bento grid-flow-dense">
-              <OutcomePanel timeline={dashboard.timeline} metrics={dashboard.planMetrics} resources={dashboard.resources} planVersion={planVersion} runtime={runtime} onInfo={showPreviewLimit} />
-              <MemoryRail
-                memory={dashboard.memory}
-                activities={dashboard.activities}
-                regions={dashboard.regions}
-                resilience={dashboard.resilience}
-                runtime={runtime}
-                outageState={outageState}
-                outageResult={outageResult}
-                outageError={outageError}
-                onOutage={simulateOutage}
-                onRestore={restoreRegion}
-              />
-            </div>
-          </section>
-
-          <footer className="command-action">
-            <div>
-              <h2>Pressure-test the next decision before conditions choose for you.</h2>
-              <p>Run a bounded scenario or bring in source imagery. Every result stays explicit about evidence, persistence, and human review.</p>
-            </div>
-            <div className="action-buttons">
-              <button className="hero-primary" type="button" onClick={() => setSimulationOpen(true)}><Play size={17} fill="currentColor" /> Run simulation</button>
-              <button className="hero-secondary" type="button" onClick={() => setAssessmentOpen(true)}><Satellite size={17} /> Assess imagery</button>
-            </div>
-          </footer>
-        </main>
-      </div>
+      )}
       <SimulationModal
         open={simulationOpen}
         location={selectedLocation}

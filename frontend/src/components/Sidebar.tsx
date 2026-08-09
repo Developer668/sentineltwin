@@ -10,18 +10,26 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import type { RuntimeContext } from '../types'
+import type { WorkspaceId } from '../types'
 
 const navItems = [
-  { label: 'Operations', icon: Map },
-  { label: 'Situational awareness', icon: Gauge },
-  { label: 'Incidents', icon: AlertTriangle },
-  { label: 'Resources', icon: Boxes },
-  { label: 'Plans', icon: FileClock },
-  { label: 'Simulations', icon: FlaskConical },
-  { label: 'Agents', icon: Bot },
-]
+  { id: 'operations', label: 'Operations', icon: Map },
+  { id: 'awareness', label: 'Situational awareness', icon: Gauge },
+  { id: 'incidents', label: 'Incidents', icon: AlertTriangle },
+  { id: 'resources', label: 'Resources', icon: Boxes },
+  { id: 'plans', label: 'Plans', icon: FileClock },
+  { id: 'simulations', label: 'Simulations', icon: FlaskConical },
+  { id: 'agents', label: 'Agents', icon: Bot },
+] satisfies Array<{ id: WorkspaceId; label: string; icon: typeof Map }>
 
-export function Sidebar({ runtime, onUnavailable }: { runtime: RuntimeContext; onUnavailable: (feature: string) => void }) {
+interface SidebarProps {
+  runtime: RuntimeContext
+  activeWorkspace: WorkspaceId
+  onNavigate: (workspace: WorkspaceId) => void
+  onUnavailable: (feature: string) => void
+}
+
+export function Sidebar({ runtime, activeWorkspace, onNavigate, onUnavailable }: SidebarProps) {
   const status = runtime.persistence === 'cockroachdb'
     ? { label: 'Persistent services operational', detail: 'AWS · CockroachDB', className: 'persistent' }
     : runtime.apiConnected
@@ -36,8 +44,8 @@ export function Sidebar({ runtime, onUnavailable }: { runtime: RuntimeContext; o
       </div>
 
       <nav className="primary-nav">
-        {navItems.map(({ label, icon: Icon }, index) => (
-          <button key={label} className={`nav-item ${index === 0 ? 'active' : ''}`} type="button" aria-current={index === 0 ? 'page' : undefined} onClick={() => index > 0 && onUnavailable(label)}>
+        {navItems.map(({ id, label, icon: Icon }) => (
+          <button key={id} className={`nav-item ${activeWorkspace === id ? 'active' : ''}`} type="button" aria-current={activeWorkspace === id ? 'page' : undefined} onClick={() => onNavigate(id)}>
             <Icon size={17} strokeWidth={1.7} aria-hidden="true" />
             <span>{label}</span>
           </button>

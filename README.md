@@ -90,6 +90,8 @@ export SENTINEL_DEMO_MODE=false
 make api
 ```
 
+Production bootstrap excludes `database/migrations/002_seed.sql`; a new cloud database therefore starts with schema and canonical agent configuration but no fabricated locations, populations, hazard observations, or memories. Only an explicitly labeled demo database should set `SENTINEL_APPLY_DEMO_FIXTURES=true`. Use `make db-test-cloud` to run an opt-in live persistence/recall test whose temporary records are removed afterward.
+
 In another terminal:
 
 ```bash
@@ -128,7 +130,7 @@ make deploy-web
 
 `deploy-frontend.sh` injects only the public API/Cognito identifiers required for OAuth code + PKCE. Finally redeploy with the emitted CloudFront URL as the exact CORS origin. Full operator creation, parameters, IAM behavior, smoke tests, cost controls, and rollback are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-Lambda packaging is containerized (`sam build --use-container`) because the arm64 Python artifact includes the native `psycopg` wheel; host-native macOS packages are never deployed.
+Lambda packaging defaults to `sam build --use-container` because the Python artifact includes native `psycopg` and Pillow wheels; host-native macOS packages are never deployed. The default Lambda architecture is x86_64 so an exact Python 3.12 Linux x86_64 environment (including AWS CloudShell after installing Python 3.12) may instead set `SENTINEL_SAM_BUILD_MODE=native-linux`. ARM64 remains an explicit container-build option.
 
 ## API and demo
 
@@ -166,7 +168,7 @@ docs/                    Architecture, operations, demo, submission evidence
 
 ## Status
 
-The public source repository is [Developer668/sentineltwin](https://github.com/Developer668/sentineltwin). The codebase is designed to be deployable, but this checkout has not been deployed with entrant credentials. Read [HANDOFF.md](HANDOFF.md) for the exact remaining work and verification gaps. That distinction is intentional: the submission should only claim evidence it can show.
+The public source repository is [Developer668/sentineltwin](https://github.com/Developer668/sentineltwin). A real CockroachDB Cloud database is configured and verified from this checkout; AWS infrastructure and the public application are not yet deployed. Read [HANDOFF.md](HANDOFF.md) for the exact remaining work and verification gaps. The submission should only claim evidence it can show.
 
 ## License
 

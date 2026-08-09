@@ -1,6 +1,6 @@
 # Deployment guide
 
-Nothing in this guide creates external resources until you run a `ccloud`, `aws`, or `sam deploy` command. Those actions can incur charges. Review current AWS and CockroachDB pricing and use an approved account first.
+Nothing in this guide creates external resources until you run a `ccloud`, `aws`, or `sam deploy` command. Those actions can incur charges. Review the account-specific [AWS cost guardrails and teardown register](AWS_COSTS_AND_TEARDOWN.md), current AWS/CockroachDB pricing, and use an approved account first.
 
 ## 1. Tooling and authentication
 
@@ -45,7 +45,7 @@ export APPROVED_ADMIN_CIDR='REPLACE_WITH_PUBLIC_IPV4/32'
 ccloud cluster networking allowlist create sentineltwin "$APPROVED_ADMIN_CIDR" --sql --ui
 ```
 
-Basic/Standard clusters can initially include `0.0.0.0/0`. That entry is acceptable only for a time-bounded synthetic demo. Before production, establish an approved stable application egress path—such as Lambda private subnets through a NAT gateway with an Elastic IP—or PrivateLink where the selected CockroachDB plan supports it; add only those exact SQL CIDRs, verify both Lambda and administrator connectivity, then remove the public entry with `ccloud cluster networking allowlist delete sentineltwin 0.0.0.0/0`. This repository deliberately does not guess a Lambda egress CIDR or provision paid VPC/NAT/private-connectivity resources.
+Basic/Standard clusters can initially include `0.0.0.0/0`. That entry is acceptable only for a time-bounded authenticated hackathon demo. CockroachDB Basic does not support AWS PrivateLink, and CockroachDB SQL endpoints do not support IPv6, so the free IPv6 egress-only-gateway path cannot provide Lambda connectivity. Before production, establish an approved stable IPv4 application egress path—such as Lambda private subnets through a NAT gateway with an Elastic IP—or move to a CockroachDB plan that supports PrivateLink; add only those exact SQL paths, verify both Lambda and administrator connectivity, then remove the public entry with `ccloud cluster networking allowlist delete sentineltwin 0.0.0.0/0`. Both alternatives consume credits/cost. This repository deliberately does not guess a Lambda egress CIDR or silently provision paid VPC/NAT/private-connectivity resources.
 
 Construct the TLS URL using the displayed host, the password you entered, and database `sentineltwin`. Prefer a shell/session secret manager to shell history.
 
@@ -55,7 +55,7 @@ make db-bootstrap
 make db-verify
 ```
 
-`db-bootstrap` uses `database/migrate.py`, records every ordered migration, and is safe to rerun. Migration `002` installs explicitly labeled hackathon fixtures; it is not live satellite data. CockroachDB v25.4+ is required for the C-SPANN vector indexes. Rotate from the bootstrap admin to the least-privilege application identity before exposing real data.
+`db-bootstrap` uses `database/migrate.py`, records every ordered migration, and is safe to rerun. Production bootstrap excludes synthetic migration `002` by default. A labeled demo database may opt in with `SENTINEL_APPLY_DEMO_FIXTURES=true`; those fixtures are not live satellite data. CockroachDB v25.4+ is required for the C-SPANN vector indexes. Rotate from the bootstrap admin to the least-privilege application identity before exposing real data.
 
 ### Optional multi-region configuration
 
@@ -120,7 +120,7 @@ Warm Lambda environments cache configuration. Smoke-test the new credential befo
 
 ## 5. Deploy protected AWS resources
 
-Confirm the selected Bedrock model is available in the region. Start Docker before deploying: both Lambdas target Linux arm64 and `psycopg[binary]` contains native code, so the deploy script follows [AWS SAM's container-build guidance for native dependencies](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-using-build.html) and always uses `sam build --use-container` rather than packaging a host-native wheel. The deployment script derives globally unique Cognito/S3 names from the current AWS account and region.
+Confirm the selected Bedrock model is available in the region. `psycopg[binary]` and Pillow contain native code, so the deploy script follows [AWS SAM's container-build guidance for native dependencies](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-using-build.html) and defaults to `SENTINEL_SAM_BUILD_MODE=container`. This prevents a macOS wheel from ever entering Lambda. The default Lambda architecture is x86_64; an exact Linux x86_64 host with Python 3.12 may set `SENTINEL_SAM_BUILD_MODE=native-linux` when a constrained build environment cannot unpack the SAM container. ARM64 is supported only with the container mode. The deployment script derives globally unique Cognito/S3 names from the current AWS account and region.
 
 ```bash
 export STACK_NAME=sentineltwin
@@ -128,8 +128,11 @@ export BEDROCK_MODEL_ID=amazon.nova-lite-v1:0
 export CORS_ORIGIN='http://localhost:5173' # safe bootstrap; CloudFront is locked out until step 6
 export SENTINEL_DEMO_MODE=false
 export AUTH_MODE=cognito               # default; API JWT protection enabled
-# Conservative defaults; keep until an authenticated cloud load run says otherwise.
-export API_RESERVED_CONCURRENCY=10 INGESTION_RESERVED_CONCURRENCY=4
+export LAMBDA_ARCHITECTURE=x86_64 SENTINEL_SAM_BUILD_MODE=container
+# New-account-safe defaults. Zero omits reservations; the deploy preflight rejects
+# values that exceed the regional quota while preserving Lambda's unreserved pool.
+export API_RESERVED_CONCURRENCY=0 INGESTION_RESERVED_CONCURRENCY=0
+export API_DETAILED_METRICS_ENABLED=false # route-level metrics are an explicit metered opt-in
 export API_THROTTLE_RATE_LIMIT=20 API_THROTTLE_BURST_LIMIT=40 DATABASE_POOL_MAX_SIZE=4
 make deploy
 ```
@@ -255,3 +258,5 @@ aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --regio
 ```
 
 The artifact bucket, Cognito user pool, and Lambda log groups use retention policies; CockroachDB Cloud is independent. Delete them manually only after verifying exact identities, backup/evidence needs, and cost. Cluster deletion and retained evidence removal are irreversible.
+
+Use the complete service-by-service order in [AWS cost guardrails and teardown register](AWS_COSTS_AND_TEARDOWN.md). In particular, the Secrets Manager secret and SAM-managed artifact bucket are independent of the application stack and must be reviewed separately.

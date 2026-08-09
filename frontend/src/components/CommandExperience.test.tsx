@@ -1,46 +1,11 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CommandHero } from './CommandHero'
-import { EvidenceCarousel } from './EvidenceCarousel'
-import type { AgentActivity, MemoryEvent, ResilienceEvidence, RuntimeContext } from '../types'
+import { demoDashboard, offlineRuntime } from '../data/demoData'
+import { Sidebar } from './Sidebar'
+import { SystemWorkspace } from './SystemWorkspace'
 
-const memory: MemoryEvent = {
-  id: 'memory-1',
-  title: 'Santa Rosa wildfire precedent',
-  detail: 'Early shelter staging preserved evacuation capacity.',
-  location: 'Santa Rosa, CA',
-  similarity: 0.91,
-  source: 'test memory',
-}
-
-const activities: AgentActivity[] = [{
-  id: 'activity-1',
-  time: '14:22',
-  agent: 'risk_assessor',
-  action: 'Assessment ready',
-  detail: 'Source evidence normalized for review.',
-  status: 'complete',
-}]
-
-const resilience: ResilienceEvidence = {
-  topologyVerified: false,
-  survivalGoal: null,
-  topologySource: 'test:unverified',
-  configuredRpoSeconds: null,
-  observedRpoSeconds: null,
-}
-
-const runtime: RuntimeContext = {
-  source: 'api-demo',
-  apiConnected: true,
-  persistence: 'ephemeral',
-  memoryProvider: 'deterministic-in-memory',
-  label: 'Connected demo',
-  detail: 'Ephemeral runtime',
-}
-
-describe('editorial command experience', () => {
+describe('functional command-center navigation', () => {
   let container: HTMLDivElement
   let root: Root
 
@@ -55,31 +20,77 @@ describe('editorial command experience', () => {
     container.remove()
   })
 
-  it('keeps the command hero focused on exactly two high-contrast actions', async () => {
-    const onRunSimulation = vi.fn()
-    const onAssessSatellite = vi.fn()
-    await act(async () => root.render(<CommandHero onRunSimulation={onRunSimulation} onAssessSatellite={onAssessSatellite} />))
+  it('exposes every operational system and routes navigation instead of showing placeholder toasts', async () => {
+    const onNavigate = vi.fn()
+    await act(async () => root.render(
+      <Sidebar runtime={offlineRuntime} activeWorkspace="operations" onNavigate={onNavigate} onUnavailable={vi.fn()} />,
+    ))
 
-    const actions = Array.from(container.querySelectorAll<HTMLButtonElement>('.hero-actions button'))
-    expect(actions).toHaveLength(2)
-    expect(container.querySelector('h1')?.textContent).toContain('Model cascading')
+    const labels = ['Operations', 'Situational awareness', 'Incidents', 'Resources', 'Plans', 'Simulations', 'Agents']
+    for (const label of labels) expect(container.textContent).toContain(label)
 
-    await act(async () => actions[0].click())
-    await act(async () => actions[1].click())
-    expect(onRunSimulation).toHaveBeenCalledOnce()
-    expect(onAssessSatellite).toHaveBeenCalledOnce()
+    const incidents = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Incidents'))
+    await act(async () => incidents?.click())
+    expect(onNavigate).toHaveBeenCalledWith('incidents')
   })
 
-  it('cycles evidence without inventing topology or continuity proof', async () => {
-    await act(async () => root.render(<EvidenceCarousel memory={memory} activities={activities} resilience={resilience} runtime={runtime} />))
-    expect(container.textContent).toContain('Santa Rosa wildfire precedent')
+  it('moves an incident into the situational-awareness system', async () => {
+    const onSelectLocation = vi.fn()
+    const onNavigate = vi.fn()
+    await act(async () => root.render(
+      <SystemWorkspace
+        workspace="incidents"
+        dashboard={structuredClone(demoDashboard)}
+        runtime={offlineRuntime}
+        selectedLocation={demoDashboard.locations[0]}
+        layer="composite"
+        planVersion="v7.3"
+        outageState="idle"
+        outageResult={null}
+        outageError={null}
+        onSelectLocation={onSelectLocation}
+        onLayerChange={vi.fn()}
+        onNavigate={onNavigate}
+        onRunSimulation={vi.fn()}
+        onAssessSatellite={vi.fn()}
+        onOutage={vi.fn()}
+        onRestore={vi.fn()}
+        onInfo={vi.fn()}
+      />,
+    ))
 
-    const next = container.querySelector<HTMLButtonElement>('button[aria-label="Next evidence"]')
-    await act(async () => next?.click())
-    expect(container.textContent).toContain('Assessment ready')
+    const openPicture = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Open picture'))
+    await act(async () => openPicture?.click())
+    expect(onSelectLocation).toHaveBeenCalledWith('santa-rosa')
+    expect(onNavigate).toHaveBeenCalledWith('awareness')
+  })
 
-    await act(async () => next?.click())
-    expect(container.textContent).toContain('Routing labels only')
-    expect(container.textContent).toContain('does not claim quorum')
+  it('opens the correct bounded simulation preset', async () => {
+    const onRunSimulation = vi.fn()
+    await act(async () => root.render(
+      <SystemWorkspace
+        workspace="simulations"
+        dashboard={structuredClone(demoDashboard)}
+        runtime={offlineRuntime}
+        selectedLocation={demoDashboard.locations[0]}
+        layer="composite"
+        planVersion="v7.3"
+        outageState="idle"
+        outageResult={null}
+        outageError={null}
+        onSelectLocation={vi.fn()}
+        onLayerChange={vi.fn()}
+        onNavigate={vi.fn()}
+        onRunSimulation={onRunSimulation}
+        onAssessSatellite={vi.fn()}
+        onOutage={vi.fn()}
+        onRestore={vi.fn()}
+        onInfo={vi.fn()}
+      />,
+    ))
+
+    const compound = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Compound cascade'))
+    await act(async () => compound?.click())
+    expect(onRunSimulation).toHaveBeenCalledWith('composite')
   })
 })

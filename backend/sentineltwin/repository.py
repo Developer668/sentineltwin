@@ -551,13 +551,20 @@ class CockroachRepository:
 
     def health(self) -> dict:
         started = time.perf_counter()
-        row = self._read("SELECT now() AS server_time, crdb_internal.cluster_id()::STRING AS cluster_id", one=True)
+        # CockroachDB v26.2 restricts crdb_internal to unsafe/internal sessions.
+        # Health must use supported SQL so the runtime can remain least-privilege.
+        row = self._read(
+            "SELECT now() AS server_time, current_database() AS database_name, version() AS database_version",
+            one=True,
+        )
         return {
             "status": "healthy",
             "mode": self.mode,
             "provider": self.provider,
             "database": "connected",
-            "cluster_id": row["cluster_id"],
+            "cluster_id": None,
+            "database_name": row["database_name"],
+            "database_version": row["database_version"],
             "server_time": row["server_time"],
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             "data_persistence": "CockroachDB distributed SQL",

@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 PYTHON ?= python3.12
 .DEFAULT_GOAL := help
 
-.PHONY: help check install api web test lint security validate integration provision-db db-bootstrap db-verify db-test-local db-multi-region secret deploy deploy-web smoke smoke-satellite smoke-sentinel load-test
+.PHONY: help check install api web test lint security validate integration provision-db db-bootstrap db-verify db-test-local db-test-cloud db-multi-region secret deploy deploy-web smoke smoke-satellite smoke-sentinel load-test
 
 help:
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -53,6 +53,10 @@ db-verify: ## Show schema and vector index metadata for evidence.
 
 db-test-local: ## Start an ephemeral loopback CockroachDB 25.4+ and exercise the durable API path.
 	./scripts/local-cockroach-integration.sh
+
+db-test-cloud: ## Run the opt-in API persistence/recall test against DATABASE_URL (writes two simulations).
+	SENTINEL_DEMO_MODE=false SENTINEL_RUN_LIVE_COCKROACH_INTEGRATION=true \
+		PYTHONPATH=backend .venv/bin/python -m pytest -q backend/tests/test_live_cockroach_integration.py
 
 db-multi-region: ## Dry-run or explicitly apply guarded CockroachDB database region/locality settings.
 	./scripts/configure-multi-region.sh

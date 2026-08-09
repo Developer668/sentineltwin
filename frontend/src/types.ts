@@ -3,6 +3,7 @@ export type RiskLevel = 'high' | 'elevated' | 'moderate'
 export type OutageState = 'idle' | 'running' | 'complete'
 export type RuntimeSource = 'cockroachdb' | 'api-demo' | 'offline-snapshot'
 export type PersistenceMode = 'cockroachdb' | 'ephemeral' | 'none'
+export type WorkspaceId = 'operations' | 'awareness' | 'incidents' | 'resources' | 'plans' | 'simulations' | 'agents'
 
 export interface RuntimeContext {
   source: RuntimeSource

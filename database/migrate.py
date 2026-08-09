@@ -13,9 +13,24 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "backend"))
 from sentineltwin.config import validate_database_url
 
 
+def migration_paths(directory: Path, *, through: int, include_demo_fixtures: bool) -> list[Path]:
+    """Return ordered migrations, excluding synthetic fixtures for production by default."""
+    return [
+        path
+        for path in sorted(directory.glob("*.sql"))
+        if int(path.name.split("_", 1)[0]) <= through
+        and (include_demo_fixtures or path.name != "002_seed.sql")
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--through", type=int, default=999, help="highest migration number to apply")
+    parser.add_argument(
+        "--include-demo-fixtures",
+        action="store_true",
+        help="apply the explicitly synthetic 002_seed.sql demo dataset",
+    )
     args = parser.parse_args()
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
@@ -30,7 +45,11 @@ def main() -> None:
         raise SystemExit("Install backend/requirements.txt first") from exc
 
     directory = Path(__file__).parent / "migrations"
-    migrations = [path for path in sorted(directory.glob("*.sql")) if int(path.name.split("_", 1)[0]) <= args.through]
+    migrations = migration_paths(
+        directory,
+        through=args.through,
+        include_demo_fixtures=args.include_demo_fixtures,
+    )
     with psycopg.connect(database_url, autocommit=True) as connection:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS sentineltwin_schema_migrations (

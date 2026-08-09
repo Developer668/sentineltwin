@@ -5,6 +5,7 @@ import type { RuntimeContext } from '../types'
 interface HeaderProps {
   runtime: RuntimeContext
   auth: AuthState
+  workspaceLabel: string
   currentTime: string
   updatedAt: string
   onRunSimulation: () => void
@@ -13,7 +14,7 @@ interface HeaderProps {
   onInfo: (feature: string) => void
 }
 
-export function Header({ runtime, auth, currentTime, updatedAt, onRunSimulation, onAssessSatellite, onAuthAction, onInfo }: HeaderProps) {
+export function Header({ runtime, auth, workspaceLabel, currentTime, updatedAt, onRunSimulation, onAssessSatellite, onAuthAction, onInfo }: HeaderProps) {
   const healthLabel = runtime.persistence === 'cockroachdb'
     ? 'Persistent memory healthy'
     : runtime.apiConnected ? 'Ephemeral demo API' : 'Snapshot mode'
@@ -23,8 +24,8 @@ export function Header({ runtime, auth, currentTime, updatedAt, onRunSimulation,
     <header className="topbar">
       <div className="region-title">
         <CloudSun size={18} aria-hidden="true" />
-        <span>Western Region</span>
-        <b>/ {twinLabel}</b>
+        <span>{workspaceLabel}</span>
+        <b>/ Western Region · {twinLabel}</b>
         <ChevronDown size={15} aria-hidden="true" />
       </div>
       <div className="topbar-actions">

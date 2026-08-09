@@ -20,6 +20,11 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: amazon.nova-lite-v1:0
+  LambdaArchitecture:
+    Type: String
+    Default: x86_64
+    AllowedValues: [x86_64, arm64]
+    Description: x86_64 supports reproducible native builds on Linux; arm64 requires the container build mode.
   AuthMode:
     Type: String
     Default: cognito
@@ -46,16 +51,21 @@ Parameters:
     AllowedValues: ["true", "false"]
   ApiReservedConcurrency:
     Type: Number
-    Default: 10
-    MinValue: 2
+    Default: 0
+    MinValue: 0
     MaxValue: 500
-    Description: Reserved API Lambda concurrency; tune only after running the authenticated load test.
+    Description: Optional reserved API Lambda concurrency. Zero omits the reservation for reduced-quota new accounts.
   IngestionReservedConcurrency:
     Type: Number
-    Default: 4
-    MinValue: 1
+    Default: 0
+    MinValue: 0
     MaxValue: 100
-    Description: GuardDuty-cleared imagery concurrency; caps Bedrock, S3, and CockroachDB pressure.
+    Description: Optional ingestion Lambda reservation. Zero shares the account pool; tune only after an authenticated load test and quota review.
+  ApiDetailedMetricsEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Opt in to paid API Gateway route-level metrics; access logs and default metrics remain enabled when false.
   ApiThrottleBurstLimit:
     Type: Number
     Default: 40
@@ -85,11 +95,14 @@ Rules:
 Conditions:
   HasCockroachSecret: !Not [!Equals [!Ref CockroachSecretArn, ""]]
   AuthEnabled: !Equals [!Ref AuthMode, cognito]
+  HasApiReservedConcurrency: !Not [!Equals [!Ref ApiReservedConcurrency, 0]]
+  HasIngestionReservedConcurrency: !Not [!Equals [!Ref IngestionReservedConcurrency, 0]]
+  ApiDetailedMetricsOn: !Equals [!Ref ApiDetailedMetricsEnabled, "true"]
 
 Globals:
   Function:
     Runtime: python3.12
-    Architectures: [arm64]
+    Architectures: [!Ref LambdaArchitecture]
     MemorySize: 1024
     Timeout: 28
     Tracing: Active
@@ -127,7 +140,7 @@ Resources:
       StageName: !Ref StageName
       AutoDeploy: true
       DefaultRouteSettings:
-        DetailedMetricsEnabled: true
+        DetailedMetricsEnabled: !If [ApiDetailedMetricsOn, true, false]
         ThrottlingBurstLimit: !Ref ApiThrottleBurstLimit
         ThrottlingRateLimit: !Ref ApiThrottleRateLimit
       AccessLogSettings:
@@ -166,7 +179,9 @@ Resources:
       UserPoolName: !Sub "${AWS::StackName}-operators"
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
-      MfaConfiguration: ON
+      # Quote YAML 1.1 boolean-like scalars so CloudFormation receives the
+      # Cognito enum string instead of the boolean value true.
+      MfaConfiguration: "ON"
       EnabledMfas: [SOFTWARE_TOKEN_MFA]
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
@@ -231,7 +246,7 @@ Resources:
       CodeUri: ../backend/
       Handler: sentineltwin.app.lambda_handler
       Description: Runs SentinelTwin risk, retrieval, simulation, and planning agents.
-      ReservedConcurrentExecutions: !Ref ApiReservedConcurrency
+      ReservedConcurrentExecutions: !If [HasApiReservedConcurrency, !Ref ApiReservedConcurrency, !Ref "AWS::NoValue"]
       Policies:
         - !If
           - AuthEnabled
@@ -330,7 +345,7 @@ Resources:
       Description: Assesses exact quarantined object versions only after a verified GuardDuty clean verdict.
       MemorySize: 1536
       Timeout: 60
-      ReservedConcurrentExecutions: !Ref IngestionReservedConcurrency
+      ReservedConcurrentExecutions: !If [HasIngestionReservedConcurrency, !Ref IngestionReservedConcurrency, !Ref "AWS::NoValue"]
       Policies:
         - Version: "2012-10-17"
           Statement:

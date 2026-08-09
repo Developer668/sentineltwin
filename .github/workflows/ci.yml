@@ -111,7 +111,7 @@ jobs:
           fi
 
   sam-package:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -121,7 +121,7 @@ jobs:
       - name: Validate SAM template
         run: sam validate --lint --template-file infra/template.yaml
 
-      - name: Build Linux arm64 Lambda artifacts in the SAM container
+      - name: Build Linux x86_64 Lambda artifacts in the SAM container
         run: |
           docker info
           sam build --use-container --template-file infra/template.yaml

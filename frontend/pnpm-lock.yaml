@@ -8,12 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@gsap/react':
-        specifier: 2.1.2
-        version: 2.1.2(gsap@3.15.0)(react@19.2.8)
-      gsap:
-        specifier: 3.15.0
-        version: 3.15.0
       lucide-react:
         specifier: 1.29.0
         version: 1.29.0(react@19.2.8)
@@ -104,12 +98,6 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
-
-  '@gsap/react@2.1.2':
-    resolution: {integrity: sha512-JqliybO1837UcgH2hVOM4VO+38APk3ECNrsuSM4MuXp+rbf+/2IG2K1YJiqfTcXQHH7XlA0m3ykniFYstfq0Iw==}
-    peerDependencies:
-      gsap: ^3.12.5
-      react: '>=17'
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -445,9 +433,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-
-  gsap@3.15.0:
-    resolution: {integrity: sha512-dMW4CWBTUK1AEEDeZc1g4xpPGIrSf9fJF960qbTZmN/QwZIWY5wgliS6JWl9/25fpTGJrMRtSjGtOmPnfjZB+A==}
 
   html-encoding-sniffer@6.0.0:
     resolution: {integrity: sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg==}
@@ -823,11 +808,6 @@ snapshots:
 
   '@exodus/bytes@1.15.1': {}
 
-  '@gsap/react@2.1.2(gsap@3.15.0)(react@19.2.8)':
-    dependencies:
-      gsap: 3.15.0
-      react: 19.2.8
-
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
   '@oxc-project/types@0.143.0': {}
@@ -1045,8 +1025,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  gsap@3.15.0: {}
 
   html-encoding-sniffer@6.0.0:
     dependencies:

@@ -1,3 +1,6 @@
+import subprocess
+from pathlib import Path
+
 import boto3
 import pytest
 from sentineltwin.app import SentinelAPI
@@ -9,6 +12,24 @@ from sentineltwin.repository import (
     UnavailableRepository,
     make_repository,
 )
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_env_example_can_be_sourced_by_setup_commands():
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -a; source .env.example; test \"$VITE_COGNITO_SCOPES\" = 'openid email profile'",
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
