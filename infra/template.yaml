@@ -185,7 +185,11 @@ Resources:
       AutoVerifiedAttributes: [email]
       # Quote YAML 1.1 boolean-like scalars so CloudFormation receives the
       # Cognito enum string instead of the boolean value true.
-      MfaConfiguration: "ON"
+      # Software TOTP remains available, while OPTIONAL lets the dedicated,
+      # least-privileged hackathon reviewer account complete Hosted UI login.
+      # Require MFA on long-lived operator accounts and remove the reviewer
+      # account after judging.
+      MfaConfiguration: "OPTIONAL"
       EnabledMfas: [SOFTWARE_TOKEN_MFA]
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true

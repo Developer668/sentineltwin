@@ -145,7 +145,7 @@ If GuardDuty activation is unavailable in the account, set `GUARDDUTY_MALWARE_PR
 CloudFormation creates:
 
 - API Gateway HTTP API, JWT authorizer, API Lambda, logs, X-Ray, throttles, and alarms;
-- Cognito User Pool with required software-token MFA, `sentineltwin-operators` authorization group, no-secret SPA client, Hosted UI, authorization-code flow, and PKCE-compatible callbacks;
+- Cognito User Pool with optional software-token MFA, `sentineltwin-operators` authorization group, no-secret SPA client, Hosted UI, authorization-code flow, and PKCE-compatible callbacks;
 - private/versioned artifact S3 with a quarantine prefix; optional GuardDuty Malware Protection, scan-result EventBridge rule, assessment Lambda, bounded retries, encrypted SQS dead-letter queue, logs, and alarm;
 - private/versioned web S3, CloudFront Origin Access Control, SPA fallback, cache/security headers;
 - narrowly scoped Bedrock, S3, Secrets Manager, EventBridge, SQS, and Lambda permissions.
@@ -174,7 +174,7 @@ aws cognito-idp admin-add-user-to-group \
   --region "$AWS_REGION"
 ```
 
-The API Lambda independently requires the verified `cognito:groups` claim to contain `sentineltwin-operators`; a valid pool token without that group receives `403`. MFA is required by the pool, so the first Hosted UI session also enrolls a software authenticator after the temporary-password challenge.
+The API Lambda independently requires the verified `cognito:groups` claim to contain `sentineltwin-operators`; a valid pool token without that group receives `403`. Software TOTP is available and should be enrolled for long-lived operators. A dedicated hackathon reviewer may remain password-only so judges can test the live flow; remove that user immediately after judging.
 
 `make deploy-web` reads `ApiUrl`, Cognito domain/client/callback/scopes, and the web bucket from stack outputs. It builds the SPA without any client secret, uploads it, sets `index.html` to no-cache, and invalidates CloudFront:
 
@@ -193,7 +193,7 @@ make deploy
 make deploy-web
 ```
 
-Open `WEB_URL` in a private browser, complete the temporary-password and MFA enrollment challenges, and sign in. The SPA uses OAuth authorization code + PKCE S256, keeps short-lived access/ID tokens only in memory, deliberately discards the refresh token, and sends the access token as `Bearer`. Only the one-time PKCE verifier/state is kept transiently in `sessionStorage` while the redirect completes, so reloading or closing the page requires another sign-in.
+Open `WEB_URL` in a private browser, complete the temporary-password challenge, enroll software TOTP when required for that operator, and sign in. The SPA uses OAuth authorization code + PKCE S256, keeps short-lived access/ID tokens only in memory, deliberately discards the refresh token, and sends the access token as `Bearer`. Only the one-time PKCE verifier/state is kept transiently in `sessionStorage` while the redirect completes, so reloading or closing the page requires another sign-in.
 
 ## 7. Deployed smoke tests
 

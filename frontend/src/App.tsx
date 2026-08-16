@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AccessGate } from './components/AccessGate'
 import { Header } from './components/Header'
 import { MemoryRail } from './components/MemoryRail'
 import { OutcomePanel } from './components/OutcomePanel'
@@ -9,6 +10,7 @@ import { Sidebar } from './components/Sidebar'
 import { SimulationModal } from './components/SimulationModal'
 import { SystemWorkspace } from './components/SystemWorkspace'
 import { Toast } from './components/Toast'
+import { UserGuide } from './components/UserGuide'
 import { demoDashboard, offlineRuntime } from './data/demoData'
 import { describeApiError, sentinelApi } from './lib/api'
 import { isAgriculturalEvidenceReady } from './lib/agriculturalEvidence'
@@ -29,6 +31,9 @@ export default function App() {
   const [dashboard, setDashboard] = useState<DashboardData>(() => structuredClone(demoDashboard))
   const [runtime, setRuntime] = useState(offlineRuntime)
   const [auth, setAuth] = useState(() => cognitoAuth.state())
+  const [authReady, setAuthReady] = useState(false)
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [localPreview] = useState(() => ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname))
   const [selectedLocationId, setSelectedLocationId] = useState('santa-rosa')
   const [layer, setLayer] = useState<HazardLayer>('composite')
   const [simulationOpen, setSimulationOpen] = useState(false)
@@ -48,16 +53,24 @@ export default function App() {
       if (!active) return
       setAuth(nextAuth)
       if (nextAuth.error) setToast(nextAuth.error)
+      const mayLoadDashboard = nextAuth.authenticated || (!nextAuth.enabled && localPreview)
+      if (!mayLoadDashboard) {
+        setAuthReady(true)
+        return
+      }
       const { data, runtime: nextRuntime, error } = await sentinelApi.getDashboard()
       if (!active) return
       setDashboard(data)
       setRuntime(nextRuntime)
       if (error) setToast(describeApiError(error, 'load the command center'))
       if (data.locations.length && !data.locations.some((location) => location.id === selectedLocationId)) setSelectedLocationId(data.locations[0].id)
+      setAuthReady(true)
     }
     void hydrate()
     return () => { active = false }
-  }, []) // Backend hydration should occur once; interactions remain optimistic.
+  }, [localPreview]) // Auth and backend hydration should occur once; interactions remain optimistic.
+
+  const accessGranted = auth.authenticated || (!auth.enabled && localPreview)
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -211,13 +224,17 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    document.title = `${workspaceLabels[activeWorkspace]} · SentinelTwin`
-  }, [activeWorkspace])
+    document.title = accessGranted ? `${workspaceLabels[activeWorkspace]} · SentinelTwin` : 'SentinelTwin · Secure resilience command center'
+  }, [accessGranted, activeWorkspace])
+
+  if (!authReady || !accessGranted) {
+    return <AccessGate ready={authReady} authEnabled={auth.enabled} error={auth.error} onSignIn={handleAuth} />
+  }
 
   return (
     <div className="app-shell workspace-shell">
       <a className="skip-link" href="#risk-map">Skip to risk map</a>
-      <Sidebar runtime={runtime} activeWorkspace={activeWorkspace} onNavigate={navigateWorkspace} onUnavailable={showPreviewLimit} />
+      <Sidebar runtime={runtime} activeWorkspace={activeWorkspace} onNavigate={navigateWorkspace} />
       <Header
         runtime={runtime}
         auth={auth}
@@ -227,7 +244,7 @@ export default function App() {
         onAssessSatellite={() => setAssessmentOpen(true)}
         onRunSimulation={() => openSimulation()}
         onAuthAction={handleAuth}
-        onInfo={showPreviewLimit}
+        onGuide={() => setGuideOpen(true)}
       />
 
       {activeWorkspace === 'operations' ? (
@@ -291,6 +308,7 @@ export default function App() {
         onSubmit={assessSatellite}
         onComplete={completeAssessment}
       />
+      <UserGuide open={guideOpen} onClose={() => setGuideOpen(false)} />
       {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </div>
   )

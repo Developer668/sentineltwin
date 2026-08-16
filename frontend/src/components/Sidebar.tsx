@@ -6,7 +6,6 @@ import {
   FlaskConical,
   Gauge,
   Map,
-  Settings,
   ShieldCheck,
 } from 'lucide-react'
 import type { RuntimeContext } from '../types'
@@ -26,10 +25,9 @@ interface SidebarProps {
   runtime: RuntimeContext
   activeWorkspace: WorkspaceId
   onNavigate: (workspace: WorkspaceId) => void
-  onUnavailable: (feature: string) => void
 }
 
-export function Sidebar({ runtime, activeWorkspace, onNavigate, onUnavailable }: SidebarProps) {
+export function Sidebar({ runtime, activeWorkspace, onNavigate }: SidebarProps) {
   const status = runtime.persistence === 'cockroachdb'
     ? { label: 'Persistent services operational', detail: 'AWS · CockroachDB', className: 'persistent' }
     : runtime.apiConnected
@@ -50,10 +48,6 @@ export function Sidebar({ runtime, activeWorkspace, onNavigate, onUnavailable }:
             <span>{label}</span>
           </button>
         ))}
-        <button className="nav-item" type="button" onClick={() => onUnavailable('Settings')}>
-          <Settings size={17} strokeWidth={1.7} aria-hidden="true" />
-          <span>Settings</span>
-        </button>
       </nav>
 
       <div className="system-status">

@@ -67,7 +67,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, data flow, and 
 | Amazon S3 + optional [GuardDuty Malware Protection](https://docs.aws.amazon.com/guardduty/latest/ug/monitor-with-eventbridge-s3-malware-protection.html) + EventBridge | With GuardDuty enabled, browser uploads and Open Data scenes enter private quarantine and only the exact version tagged `NO_THREATS_FOUND` can reach Bedrock. When the account cannot activate GuardDuty, browser uploads fail closed and only the trusted Open Data path is available. |
 | [Sentinel-2 on AWS Open Data](https://registry.opendata.aws/sentinel-2/) | The API reads only `sentinel-s2-l2a` in `eu-central-1`, validates a strict L2A `R60m/TCI.jp2` key, bounded size, and JPEG-2000 signature, then copies it to versioned S3 with its upstream ETag and SHA-256. In trusted-source mode it re-reads that exact S3 version and verifies the stored hash before Bedrock. |
 | Agricultural Resilience | A simulation can run only from a CockroachDB-persisted, Bedrock-assessed Sentinel-2 observation. Satellite vegetation, moisture, slope, and fire risk are evidence; rainfall deficit, heat anomaly, and irrigation coverage remain visibly named operator assumptions—not fabricated weather. Each outcome becomes a durable, recallable memory. |
-| Amazon Cognito | Admin-invite login uses authorization code + PKCE and required MFA; API Gateway validates JWT issuer/audience/scope and Lambda requires the `sentineltwin-operators` group. |
+| Amazon Cognito | Admin-invite login uses authorization code + PKCE and optional software TOTP; API Gateway validates JWT issuer/audience/scope and Lambda requires the `sentineltwin-operators` group. The dedicated judge account is removed after judging. |
 
 Claims and evidence commands are cataloged in [docs/COCKROACHDB_TOOLS.md](docs/COCKROACHDB_TOOLS.md).
 
@@ -125,7 +125,7 @@ make secret
 make deploy
 ```
 
-`make deploy` creates an admin-invite Cognito pool with required software-token MFA, a `sentineltwin-operators` group, and a no-secret SPA client/Hosted UI. It defaults to `AUTH_MODE=cognito`; `AUTH_MODE=public` is an explicit short-lived opt-out accepted only with `SENTINEL_DEMO_MODE=true` and no CockroachDB secret. In public mode, S3/Bedrock runtime configuration and IAM are removed and the ingestion rule is disabled, so only synthetic deterministic paths remain. Cognito mode is required for real AWS/Cockroach persistence. Create an operator and add it to the emitted group as documented, then build and upload from stack outputs:
+`make deploy` creates an admin-invite Cognito pool with optional software-token MFA, a `sentineltwin-operators` group, and a no-secret SPA client/Hosted UI. Long-lived operators should enroll TOTP; the temporary judge account is intentionally password-only and must be removed after judging. It defaults to `AUTH_MODE=cognito`; `AUTH_MODE=public` is an explicit short-lived opt-out accepted only with `SENTINEL_DEMO_MODE=true` and no CockroachDB secret. In public mode, S3/Bedrock runtime configuration and IAM are removed and the ingestion rule is disabled, so only synthetic deterministic paths remain. Cognito mode is required for real AWS/Cockroach persistence. Create an operator and add it to the emitted group as documented, then build and upload from stack outputs:
 
 ```bash
 make deploy-web

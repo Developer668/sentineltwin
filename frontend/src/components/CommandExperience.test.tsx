@@ -23,11 +23,12 @@ describe('functional command-center navigation', () => {
   it('exposes every operational system and routes navigation instead of showing placeholder toasts', async () => {
     const onNavigate = vi.fn()
     await act(async () => root.render(
-      <Sidebar runtime={offlineRuntime} activeWorkspace="operations" onNavigate={onNavigate} onUnavailable={vi.fn()} />,
+      <Sidebar runtime={offlineRuntime} activeWorkspace="operations" onNavigate={onNavigate} />,
     ))
 
     const labels = ['Operations', 'Situational awareness', 'Incidents', 'Resources', 'Plans', 'Simulations', 'Agents']
     for (const label of labels) expect(container.textContent).toContain(label)
+    expect(container.textContent).not.toContain('Settings')
 
     const incidents = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Incidents'))
     await act(async () => incidents?.click())
