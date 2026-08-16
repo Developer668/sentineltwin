@@ -1,6 +1,67 @@
 from sentineltwin.repository import CockroachRepository
 
 
+class _RetryCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _RetryConnection:
+    def __init__(self):
+        self.commits = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def cursor(self):
+        return _RetryCursor()
+
+    def commit(self):
+        self.commits += 1
+
+
+class _SerializationFailure(Exception):
+    sqlstate = "40001"
+
+
+def test_serialization_retry_reexecutes_whole_transaction_with_bounded_jitter(monkeypatch):
+    repository = object.__new__(CockroachRepository)
+    connections = []
+
+    def connect():
+        connection = _RetryConnection()
+        connections.append(connection)
+        return connection
+
+    calls = 0
+
+    def operation(_cursor):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise _SerializationFailure()
+        return "committed"
+
+    jitter_bounds = []
+    monkeypatch.setattr(repository, "_connect", connect)
+    monkeypatch.setattr(
+        "sentineltwin.repository.random.uniform",
+        lambda lower, upper: jitter_bounds.append((lower, upper)) or upper,
+    )
+    monkeypatch.setattr("sentineltwin.repository.time.sleep", lambda _seconds: None)
+
+    assert repository._write(operation) == "committed"
+    assert calls == 3
+    assert jitter_bounds == [(0.0, 0.025), (0.0, 0.05)]
+    assert [connection.commits for connection in connections] == [0, 0, 1]
+
+
 def test_cross_prefix_vector_merge_ranks_l2_distance_before_importance():
     repository = object.__new__(CockroachRepository)
 

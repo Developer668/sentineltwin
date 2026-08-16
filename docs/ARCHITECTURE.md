@@ -84,7 +84,7 @@ sequenceDiagram
 | S3 → GuardDuty → EventBridge → ingestion | GuardDuty scans only the quarantine prefix and tags the scanned version. EventBridge carries GuardDuty verdicts, not raw S3 creation. Ingestion re-reads the exact-version `GuardDutyMalwareScanStatus=NO_THREATS_FOUND` tag before fetching bytes; threats, unsupported, denied, missing, or failed scans never reach Bedrock. |
 | Trusted Open Data copy → API Lambda | Available only when GuardDuty is disabled. Browser uploads fail closed. The server alone chooses the fixed public bucket, computes the upstream hash, writes immutable provenance, then re-reads the exact S3 version and verifies ETag, key shape, metadata, byte length, JPEG-2000 signature, and SHA-256 before Bedrock. |
 | CloudFront → web S3 | Origin Access Control signed requests; public access blocked. |
-| Operator/MCP → CockroachDB | Cloud OAuth/token, read-only Managed MCP, audit logging; never a browser credential. |
+| Operator → CockroachDB | CockroachDB Cloud Console authentication and sanitized usage evidence; never expose a SQL credential in the browser or submission. |
 
 ## Durable memory model
 

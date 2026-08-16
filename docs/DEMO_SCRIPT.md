@@ -44,11 +44,11 @@ Target: **2 minutes 40 seconds**, leaving 20 seconds under the hard three-minute
 
 **Screen:** sanitized terminal split view.
 
-**Action:** Show `ccloud cluster info sentineltwin`; then `crdb_internal.table_indexes` and an `EXPLAIN` with `<->` showing `vector search`. Optionally show a read-only Managed MCP query and audit log.
+**Action:** Show the CockroachDB Cloud usage dashboard; then `crdb_internal.table_indexes` and an `EXPLAIN` with `<->` showing `vector search` when sanitized SQL evidence is available.
 
-**Say:** “We provision and inspect the AWS-hosted cluster with the agent-ready ccloud CLI. Vector recall runs in CockroachDB beside transactional state. We also provide a read-only Managed MCP configuration and a reusable Agent Skill encoding safe memory and failure rules.”
+**Say:** “Vector recall runs in CockroachDB beside transactional state. We executed CockroachDB’s official transaction-design and privilege-hardening Agent Skills against the codebase; the resulting audit and tests are committed with the project. Managed MCP and ccloud examples are present but are not claimed as live submission tools.”
 
-Only claim MCP as used if it is actually connected and audited; otherwise say “integration-ready example.” Two qualifying tools are already ccloud + distributed vector indexing.
+Only claim MCP or ccloud as used if a real execution and sanitized evidence exist. The two demonstrated tools are distributed vector indexing and the official Agent Skills Repo.
 
 ## 2:13–2:28 — resilience and honesty
 

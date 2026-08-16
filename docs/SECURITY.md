@@ -14,7 +14,7 @@
 - CockroachDB URLs require TLS. Application SQL must be parameterized and use a non-admin role created by the schema/bootstrap process.
 - API Gateway throttling and Lambda reserved concurrency bound abuse/cost; access logs omit bodies and authorization headers.
 - `NoEcho` protects the secret ARN parameter in CloudFormation views (the ARN is an identifier, not the secret value).
-- Managed MCP configuration is OAuth-first and intended only for read-only, audited operator/judge inspection. The checked-in example contains no cluster ID or credential.
+- The optional Managed MCP example is OAuth-first and contains no cluster ID or credential. It was not activated for this submission and must not be described as executed usage.
 
 ## Required before a public launch
 
@@ -30,7 +30,7 @@
 
 ## SQL role policy
 
-Use `sentinel_admin` only to apply schema/grants. Lambda should connect as `sentinel_app`, limited to the SentinelTwin database/schema and required CRUD/sequences. Managed MCP should use a distinct read-only identity. Do not reuse passwords or give the Lambda `admin`.
+Use `sentinel_admin` only to apply schema/grants. Lambda should connect as `sentinel_app`, limited to the SentinelTwin database/schema and required CRUD/sequences. Any future inspection integration should use a distinct read-only identity. Do not reuse passwords or give the Lambda `admin`.
 
 ## Prompt and data safety
 

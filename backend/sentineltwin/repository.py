@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import math
+import random
 import threading
 import time
 import uuid
@@ -547,7 +548,10 @@ class CockroachRepository:
             except Exception as exc:
                 if getattr(exc, "sqlstate", None) != "40001" or attempt == 3:
                     raise
-                time.sleep(0.025 * 2**attempt)
+                # Full jitter prevents concurrent Lambda invocations from
+                # re-entering CockroachDB's serializable transaction at the
+                # same instant after a contention retry.
+                time.sleep(random.uniform(0.0, 0.025 * 2**attempt))
 
     @staticmethod
     def _location(row: dict) -> dict:

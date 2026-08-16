@@ -46,9 +46,8 @@ flowchart LR
     L <--> CRDB["CockroachDB Cloud on AWS\nsole persistent memory"]
     ING <--> CRDB
     CRDB --> V["Spatial + distributed vector indexes"]
-    MCP["Managed MCP Server\nread-only judge/operator access"] --> CRDB
-    CC["ccloud CLI\nprovisioning + operations"] --> CRDB
-    SK["Sentinel memory Agent Skill"] -. query and safety rules .-> L
+    CONSOLE["CockroachDB Cloud Console\ncluster + usage evidence"] --> CRDB
+    SK["Official CockroachDB Agent Skills\ntransaction + privilege audit"] -. query and safety rules .-> L
     L --> OBS["CloudWatch + X-Ray"]
 ```
 
@@ -59,9 +58,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, data flow, and 
 | Requirement | Concrete use |
 |---|---|
 | CockroachDB distributed vector indexing | Embeddings live beside structured/spatial memories; nearest-neighbor recall needs no second vector database. |
-| `ccloud` CLI | Reproducibly provisions an AWS-hosted cluster/database and exposes explicit operational commands. |
-| CockroachDB Cloud Managed MCP | OAuth-first local config for audited, read-only inspection of sanitized memory evidence; write access is deliberately excluded. |
-| CockroachDB Agent Skills | Repository-local executable skill defines safe recall, write, provenance, and failure semantics. |
+| CockroachDB Agent Skills Repo | The official transaction-design and privilege-hardening skills were executed against this repository. They directly produced jittered serializable retries, atomic memory writes, least-privilege checks, and the recorded audit in `docs/COCKROACHDB_AGENT_SKILLS_AUDIT.md`. |
 | AWS Lambda + API Gateway | Serverless execution and HTTPS API for every assessment/simulation tick. |
 | Amazon Bedrock | Agent planning/reasoning through Bedrock Runtime `Converse`; no third-party model API. Embeddings are deterministic feature hashes for the hackathon dataset. |
 | Amazon S3 + optional [GuardDuty Malware Protection](https://docs.aws.amazon.com/guardduty/latest/ug/monitor-with-eventbridge-s3-malware-protection.html) + EventBridge | With GuardDuty enabled, browser uploads and Open Data scenes enter private quarantine and only the exact version tagged `NO_THREATS_FOUND` can reach Bedrock. When the account cannot activate GuardDuty, browser uploads fail closed and only the trusted Open Data path is available. |
@@ -73,7 +70,7 @@ Claims and evidence commands are cataloged in [docs/COCKROACHDB_TOOLS.md](docs/C
 
 ## Local setup
 
-Prerequisites: Python 3.12+, Node.js 22.13.0+, `pnpm`, and the CockroachDB SQL CLI; AWS CLI/SAM, `ccloud`, and a running Docker daemon are needed only for cloud provisioning/deployment. Docker is not needed for the isolated local CockroachDB test.
+Prerequisites: Python 3.12+, Node.js 22.13.0+, `pnpm`, and the CockroachDB SQL CLI; AWS CLI/SAM and a running Docker daemon are needed only for AWS deployment. `ccloud` is supported by an optional guarded provisioning script, but the submitted cluster was created and verified through CockroachDB Cloud Console. Docker is not needed for the isolated local CockroachDB test.
 
 ```bash
 cp .env.example .env
